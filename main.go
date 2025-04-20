@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/HeRedBo/pkg/db"
 	"github.com/HeRedBo/pkg/mq"
+	"github.com/gin-gonic/gin"
 	"shop/pkg/base"
 	"shop/pkg/casbin"
 	"shop/pkg/global"
@@ -34,5 +35,6 @@ func init() {
 }
 
 func main() {
+	gin.SetMode(global.CONFIG.Server.RunMode)
 
 }
