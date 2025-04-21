@@ -1,22 +1,19 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"github.com/HeRedBo/pkg/cache"
 	"github.com/HeRedBo/pkg/db"
+	"github.com/HeRedBo/pkg/shutdown"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v7"
 	"net/http"
-	"os"
-	"os/signal"
 	"shop/pkg/base"
 	"shop/pkg/casbin"
 	"shop/pkg/global"
 	"shop/pkg/jwt"
 	"shop/pkg/logging"
 	"shop/routers"
-	"syscall"
 	"time"
 )
 
@@ -77,40 +74,40 @@ func main() {
 	}()
 
 	//优雅关闭
-	//shutdown.NewHook().Close(
-	//	//关闭http server
-	//	func() {
-	//		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	//		defer cancel()
-	//		if err := server.Shutdown(ctx); err != nil {
-	//			logging.Error("http server shutdown error", err)
-	//		}
-	//	},
-	//	//关闭kafka producer
-	//	//func() {
-	//	//	if err := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Close(); err != nil {
-	//	//		logging.Error("kafka close error", err, "client", mq.DefaultKafkaSyncProducer)
-	//	//	}
-	//	//},
-	//	//关闭mysql
-	//	func() {
-	//		if err := db.CloseMysqlClient(db.DefaultClient); err != nil {
-	//			logging.Error("CloseMysqlClient error", err, "client", db.DefaultClient)
-	//		}
-	//	},
-	//)
+	shutdown.NewHook().Close(
+		//关闭http server
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			defer cancel()
+			if err := server.Shutdown(ctx); err != nil {
+				logging.Error("http server shutdown error", err)
+			}
+		},
+		//关闭kafka producer
+		//func() {
+		//	if err := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Close(); err != nil {
+		//		logging.Error("kafka close error", err, "client", mq.DefaultKafkaSyncProducer)
+		//	}
+		//},
+		//关闭mysql
+		func() {
+			if err := db.CloseMysqlClient(db.DefaultClient); err != nil {
+				logging.Error("CloseMysqlClient error", err, "client", db.DefaultClient)
+			}
+		},
+	)
 
 	//优雅关闭的第二种方式
-	signals := make(chan os.Signal, 0)
-	signal.Notify(signals, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	s := <-signals
-	global.LOG.Warnf("shop recice signal:", s)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-	err := server.Shutdown(ctx)
-	if err != nil {
-		global.LOG.Error("http server close error", err)
-	}
+	//signals := make(chan os.Signal, 0)
+	//signal.Notify(signals, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	//s := <-signals
+	//global.LOG.Warnf("shop recice signal:", s)
+	//ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	//defer cancel()
+	//err := server.Shutdown(ctx)
+	//if err != nil {
+	//	global.LOG.Error("http server close error", err)
+	//}
 	//mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Close()
 
 }
