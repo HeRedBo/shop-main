@@ -12,7 +12,7 @@ require (
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/gin-gonic/gin v1.10.0
-	github.com/gookit/goutil v0.6.17
+	github.com/gookit/goutil v0.6.18
 	github.com/lestrrat/go-file-rotatelogs v0.0.0-20180223000712-d3151e2a480f
 	github.com/mojocn/base64Captcha v1.3.8
 	github.com/robfig/cron/v3 v3.0.1
@@ -28,6 +28,9 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/HeRedBo/pkg/cache v0.0.0-20250421154535-ac0072629fbe // indirect
+	github.com/HeRedBo/pkg/errors v1.0.0 // indirect
+	github.com/HeRedBo/pkg/shutdown v0.0.0-20250421154535-ac0072629fbe // indirect
 	github.com/IBM/sarama v1.45.1 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/bradfitz/gomemcache v0.0.0-20220106215444-fb4bf637b56d // indirect
@@ -51,6 +54,7 @@ require (
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.20.0 // indirect
+	github.com/go-redis/redis/v7 v7.4.1 // indirect
 	github.com/go-redis/redis/v8 v8.11.5 // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
