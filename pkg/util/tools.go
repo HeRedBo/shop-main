@@ -50,3 +50,9 @@ func Contains(array interface{}, val interface{}) (index int) {
 func Convert(array interface{}) string {
 	return strings.Replace(strings.Trim(fmt.Sprint(array), "[]"), " ", ",", -1)
 }
+func IntToBool(num int8) bool {
+	if num > 0 {
+		return true
+	}
+	return false
+}
