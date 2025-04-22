@@ -16,5 +16,11 @@ func InitRouter() *gin.Engine {
 	loginController := admin.LoginController{}
 	r.POST("/auth/login", loginController.Login)
 	r.GET("/auth/captcha", loginController.Captcha)
+	adminRouter := r.Group("/admin")
+	adminRouter.Use(middleware.Jwt())
+	{
+		adminRouter.GET("/auth/info", loginController.Info)
+		adminRouter.DELETE("/auth/logout", loginController.Logout)
+	}
 	return r
 }

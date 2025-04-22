@@ -58,10 +58,10 @@ func (e *LoginController) Login(c *gin.Context) {
 		return
 	}
 	//校验验证码
-	if !store.Verify(authUser.Id, authUser.Code, true) {
-		appG.Response(http.StatusInternalServerError, constant.ERROR_CAPTCHA_USER, nil)
-		return
-	}
+	//if !store.Verify(authUser.Id, authUser.Code, true) {
+	//	appG.Response(http.StatusInternalServerError, constant.ERROR_CAPTCHA_USER, nil)
+	//	return
+	//}
 	if !util.ComparePwd(currentUser.Password, []byte(authUser.Password)) {
 		appG.Response(http.StatusInternalServerError, constant.ERROR_PASS_USER, nil)
 		return

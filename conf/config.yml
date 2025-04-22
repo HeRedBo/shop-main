@@ -30,7 +30,7 @@ database:
   user: 'root'
   password: 'root'
   host: '127.0.0.1:3306'
-  name: 'demo'
+  name: 'go_shop'
   table_prefix:
 
 redis:
