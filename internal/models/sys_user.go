@@ -114,46 +114,46 @@ func AddUser(m *SysUser) error {
 	return err
 }
 
-//func UpdateByUser(m *SysUser) error {
-//	var err error
-//	tx := global.Db.Begin()
-//	defer func() {
-//		if err != nil {
-//			tx.Rollback()
-//		} else {
-//			tx.Commit()
-//		}
-//	}()
-//	err = tx.Where("sys_user_id = ?", m.Id).Delete(SysUsersRoles{}).Error
-//	if err != nil {
-//		return err
-//	}
-//	err = tx.Save(m).Error
-//	if err != nil {
-//		return err
-//	}
-//
-//	return err
-//}
-//
-//func DelByUser(ids []int64) error {
-//	var err error
-//	tx := global.Db.Begin()
-//	defer func() {
-//		if err != nil {
-//			tx.Rollback()
-//		} else {
-//			tx.Commit()
-//		}
-//	}()
-//	err = tx.Where("id in (?)", ids).Delete(&SysUser{}).Error
-//	if err != nil {
-//		return err
-//	}
-//	err = tx.Unscoped().Where("sys_user_id in (?)", ids).Delete(SysUsersRoles{}).Error
-//	if err != nil {
-//		return err
-//	}
-//
-//	return err
-//}
+func UpdateByUser(m *SysUser) error {
+	var err error
+	tx := global.Db.Begin()
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			tx.Commit()
+		}
+	}()
+	err = tx.Where("sys_user_id = ?", m.Id).Delete(SysUsersRoles{}).Error
+	if err != nil {
+		return err
+	}
+	err = tx.Save(m).Error
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+func DelByUser(ids []int64) error {
+	var err error
+	tx := global.Db.Begin()
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			tx.Commit()
+		}
+	}()
+	err = tx.Where("id in (?)", ids).Delete(&SysUser{}).Error
+	if err != nil {
+		return err
+	}
+	err = tx.Unscoped().Where("sys_user_id in (?)", ids).Delete(SysUsersRoles{}).Error
+	if err != nil {
+		return err
+	}
+
+	return err
+}

@@ -16,11 +16,23 @@ func InitRouter() *gin.Engine {
 	loginController := admin.LoginController{}
 	r.POST("/auth/login", loginController.Login)
 	r.GET("/auth/captcha", loginController.Captcha)
+	userController := admin.UserController{}
+
 	adminRouter := r.Group("/admin")
 	adminRouter.Use(middleware.Jwt())
 	{
 		adminRouter.GET("/auth/info", loginController.Info)
 		adminRouter.DELETE("/auth/logout", loginController.Logout)
+
+		// region 用户中心模块
+		adminRouter.GET("/user", userController.GetAll)
+		adminRouter.POST("/user", userController.Post)
+		adminRouter.PUT("/user", userController.Put)
+		adminRouter.DELETE("/user", userController.Delete)
+		adminRouter.PUT("/user/center", userController.Center)
+		adminRouter.POST("/user/updatePass/", userController.Pass)
+		adminRouter.POST("/user/updateAvatar", userController.Avatar)
+		// endregion
 	}
 	return r
 }

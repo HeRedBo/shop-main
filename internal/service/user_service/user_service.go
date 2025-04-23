@@ -4,6 +4,8 @@ import (
 	"errors"
 	"shop/internal/models"
 	"shop/internal/models/vo"
+	userDto "shop/internal/service/user_service/dto"
+	"shop/pkg/util"
 )
 
 type User struct {
@@ -20,6 +22,8 @@ type User struct {
 
 	Ids []int64
 
+	UserPost userDto.UserPost
+	UserPass userDto.UserPass
 	ImageUrl string
 }
 
@@ -32,6 +36,33 @@ func (u *User) UpdateImage() error {
 	user.Avatar = u.ImageUrl
 	return models.UpdateCurrentUser(&user)
 }
+
+func (u *User) UpdatePass() error {
+	user, err := models.GetUserById(u.Id)
+	if err != nil {
+		return errors.New("用户不存在")
+	}
+	if !util.ComparePwd(user.Password, []byte(u.UserPass.OldPass)) {
+		return errors.New("旧密码错误密码错误")
+	}
+	user.Password = util.HashAndSalt([]byte(u.UserPass.NewPass))
+	return models.UpdateCurrentUser(&user)
+}
+
+func (u *User) UpdateProfile() error {
+	user, err := models.GetUserById(u.Id)
+	if err != nil {
+		return err
+	}
+
+	user.Phone = u.UserPost.Phone
+	user.Sex = u.UserPost.Sex
+	user.NickName = u.UserPost.NickName
+
+	return models.UpdateCurrentUser(&user)
+
+}
+
 func (u *User) GetUserOneByName() (*models.SysUser, error) {
 	return models.GetUserByUsername(u.Username)
 }
@@ -56,10 +87,10 @@ func (u *User) Insert() error {
 	return models.AddUser(u.M)
 }
 
-//func (u *User) Save() error {
-//	return models.UpdateByUser(u.M)
-//}
-//
-//func (u *User) Del() error {
-//	return models.DelByUser(u.Ids)
-//}
+func (u *User) Save() error {
+	return models.UpdateByUser(u.M)
+}
+
+func (u *User) Del() error {
+	return models.DelByUser(u.Ids)
+}
