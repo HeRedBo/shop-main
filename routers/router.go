@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"shop/internal/controllers/admin"
 	"shop/middleware"
@@ -16,6 +17,7 @@ func InitRouter() *gin.Engine {
 	loginController := admin.LoginController{}
 	r.POST("/auth/login", loginController.Login)
 	r.GET("/auth/captcha", loginController.Captcha)
+	menuController := admin.MenuController{}
 	userController := admin.UserController{}
 	deptController := admin.DeptController{}
 	dictController := admin.DictController{}
@@ -68,6 +70,13 @@ func InitRouter() *gin.Engine {
 		adminRouter.GET("/logs", logController.GetAll)
 		adminRouter.DELETE("/logs", logController.Delete)
 		// endregion
+
+		adminRouter.GET("/menu/build", menuController.Build)
+		adminRouter.GET("/menu/listtree", menuController.GetTree)
+		adminRouter.GET("/menu", menuController.GetAll)
+		adminRouter.POST("/menu", menuController.Post)
+		adminRouter.PUT("/menu", menuController.Put)
+		adminRouter.DELETE("/menu", menuController.Delete)
 	}
 
 	expressController := admin.ExpressController{}
@@ -81,5 +90,26 @@ func InitRouter() *gin.Engine {
 		shopRouter.DELETE("/express/:id", expressController.Delete)
 		// endregion
 	}
+
+	wechatMenuController := admin.WechatMenuController{}
+	articleController := admin.ArticleController{}
+	wechatRouter := r.Group("/weixin")
+	wechatRouter.Use(middleware.Jwt())
+	{
+		// region 微信菜单
+		wechatRouter.GET("/menu", wechatMenuController.GetAll)
+		wechatRouter.POST("/menu", wechatMenuController.Post)
+		// endregion
+
+		// region 微信文章模块
+		wechatRouter.GET("/article", articleController.GetAll)
+		wechatRouter.POST("/article", articleController.Post)
+		wechatRouter.PUT("/article", articleController.Put)
+		wechatRouter.DELETE("/article/:id", articleController.Delete)
+		wechatRouter.GET("/article/info/:id", articleController.Get)
+		wechatRouter.GET("/article/publish/:id", articleController.Pub)
+		// endregion
+	}
+	fmt.Println(articleController)
 	return r
 }

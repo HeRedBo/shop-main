@@ -9,8 +9,8 @@ type SysRole struct {
 	Level      int32      `json:"level"`
 	Permission string     `json:"permission"`
 	Users      []*SysUser `gorm:"many2many:sys_users_roles;association_autoupdate:false;association_autocreate:false"`
-	//Menus      []*SysMenu `json:"menus" gorm:"many2many:sys_roles_menus;association_autoupdate:false;association_autocreate:false"`
-	Depts []*SysDept `gorm:"many2many:sys_roles_depts;association_autoupdate:false;association_autocreate:false"`
+	Menus      []*SysMenu `json:"menus" gorm:"many2many:sys_roles_menus;association_autoupdate:false;association_autocreate:false"`
+	Depts      []*SysDept `gorm:"many2many:sys_roles_depts;association_autoupdate:false;association_autocreate:false"`
 	BaseModel
 }
 

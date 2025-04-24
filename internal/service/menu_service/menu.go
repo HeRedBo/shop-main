@@ -19,6 +19,12 @@ type Menu struct {
 	Ids []int64
 }
 
+func (m *Menu) GetTree() []models.SysMenu {
+	maps := make(map[string]interface{})
+	list := models.GetAllMenus(maps)
+	return list
+}
+
 func (m *Menu) GetAll() vo.ResultList {
 	maps := make(map[string]interface{})
 	maps["is_del"] = 0
