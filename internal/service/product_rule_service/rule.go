@@ -1,6 +1,11 @@
 package product_rule_service
 
-import "shop/internal/models/vo"
+import (
+	"encoding/json"
+	"shop/internal/models"
+	"shop/internal/models/vo"
+	dto2 "shop/internal/service/product_service/dto"
+)
 
 type Rule struct {
 	Id   int64

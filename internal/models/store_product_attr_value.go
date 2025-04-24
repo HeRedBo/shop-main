@@ -1,6 +1,7 @@
 package models
 
 import (
+	"github.com/segmentio/ksuid"
 	dto2 "shop/internal/service/product_service/dto"
 	"shop/pkg/global"
 	"shop/pkg/util"
