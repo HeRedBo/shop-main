@@ -95,7 +95,6 @@ func GetAllUser(pageNUm int, pageSize int, maps interface{}) (int64, []SysUser) 
 
 	global.Db.Model(&SysUser{}).Where(maps).Count(&total)
 	global.Db.Model(&SysUser{}).Where(maps).Offset(pageNUm).Limit(pageSize).Preload("Jobs").Preload("Depts").Preload("Roles").Find(&users)
-
 	return total, users
 }
 

@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/gookit/goutil/dump"
 	"net/http"
 	"regexp"
 	"shop/pkg/app"
@@ -48,7 +47,6 @@ func Jwt() gin.HandlerFunc {
 		url := c.Request.URL.Path
 		method := strings.ToLower(c.Request.Method)
 		mytoken := c.Request.Header.Get("Authorization")
-		dump.P(mytoken)
 		if len(mytoken) < bearerLength {
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH, data)
 			c.Abort()
@@ -56,7 +54,6 @@ func Jwt() gin.HandlerFunc {
 		}
 		token := strings.TrimSpace(mytoken[bearerLength:])
 		usr, err := jwt.ValidateToken(token)
-		dump.Println(usr, err)
 		if err != nil {
 			logging.Info(err)
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH_CHECK_TOKEN_FAIL, data)

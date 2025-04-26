@@ -78,7 +78,6 @@ func (u *User) GetUserAll() vo.ResultList {
 	if u.Username != "" {
 		maps["username"] = u.Username
 	}
-
 	total, list := models.GetAllUser(u.PageNum, u.PageSize, maps)
 	return vo.ResultList{Content: list, TotalElements: total}
 }

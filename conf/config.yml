@@ -28,14 +28,14 @@ api:
 database:
   type: 'mysql'
   user: 'root'
-  password: 'root'
+  password: 'admin123'
   host: '127.0.0.1:3306'
-  name: 'go_shop'
+  name: 'shop'
   table_prefix:
 
 redis:
   host: '127.0.0.1:6379'
-  password:
+  password: 123456
   idle_timeout: 200
 
 kafka:

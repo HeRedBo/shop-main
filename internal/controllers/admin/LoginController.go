@@ -28,12 +28,6 @@ type CaptchaResult struct {
 // 设置自带的store
 var store = base64Captcha.DefaultMemStore
 
-type CaptachaResult struct {
-	Id          string `json:"id"`
-	Base64Blob  string `json:"base_64_blob"`
-	VerifyValue string `json:"code"`
-}
-
 // Login
 // @Title 登录
 // @Description 登录
@@ -58,10 +52,10 @@ func (e *LoginController) Login(c *gin.Context) {
 		return
 	}
 	//校验验证码
-	//if !store.Verify(authUser.Id, authUser.Code, true) {
-	//	appG.Response(http.StatusInternalServerError, constant.ERROR_CAPTCHA_USER, nil)
-	//	return
-	//}
+	if !store.Verify(authUser.Id, authUser.Code, true) {
+		appG.Response(http.StatusInternalServerError, constant.ERROR_CAPTCHA_USER, nil)
+		return
+	}
 	if !util.ComparePwd(currentUser.Password, []byte(authUser.Password)) {
 		appG.Response(http.StatusInternalServerError, constant.ERROR_PASS_USER, nil)
 		return

@@ -2,31 +2,42 @@ package models
 
 import "shop/pkg/global"
 
-type SysDict struct {
-	Name   string `json:"name" valid:"Required;"`
-	Remark string `json:"remark" valid:"Required;"`
+func DelByDict(ids []int64) error {
+	var err error
+	err = global.Db.Where("id in (?)", ids).Delete(&SysDict{}).Error
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+type SysDictDetail struct {
+	Label    string `json:"label" valid:"Required;"`
+	Value    string `json:"value" valid:"Required;"`
+	Sort     int    `json:"sort"`
+	DictId   int64  `json:"dictId"`
+	DictName string `json:"dictName"`
 	BaseModel
 }
 
-func (SysDict) TableName() string {
-	return "sys_dict"
+func (SysDictDetail) TableName() string {
+	return "sys_dict_detail"
 }
 
-// GetAllDict get all
-func GetAllDict(pageNUm int, pageSize int, maps interface{}) (int64, []SysDict) {
+// GetAllDictDetail get all
+func GetAllDictDetail(pageNUm int, pageSize int, maps interface{}) (int64, []SysDictDetail) {
 	var (
 		total int64
-		dicts []SysDict
+		lists []SysDictDetail
 	)
+	global.Db.Model(&SysDictDetail{}).Where(maps).Count(&total)
+	global.Db.Where(maps).Offset(pageNUm).Limit(pageSize).Find(&lists)
 
-	global.Db.Model(&SysDict{}).Where(maps).Count(&total)
-	global.Db.Where(maps).Offset(pageNUm).Limit(pageSize).Preload("Dept").Find(&dicts)
-
-	return total, dicts
+	return total, lists
 }
 
-// AddDict last inserted Id on success.
-func AddDict(m *SysDict) error {
+func AddDictDetail(m *SysDictDetail) error {
 	var err error
 	if err = global.Db.Create(m).Error; err != nil {
 		return err
@@ -35,7 +46,7 @@ func AddDict(m *SysDict) error {
 	return err
 }
 
-func UpdateByDict(m *SysDict) error {
+func UpdateByDictDetail(m *SysDictDetail) error {
 	var err error
 	err = global.Db.Save(m).Error
 	if err != nil {
@@ -45,9 +56,9 @@ func UpdateByDict(m *SysDict) error {
 	return err
 }
 
-func DelByDict(ids []int64) error {
+func DelByDictDetail(ids []int64) error {
 	var err error
-	err = global.Db.Where("id in (?)", ids).Delete(&SysDict{}).Error
+	err = global.Db.Model(&SysDictDetail{}).Where("id in (?)", ids).Update("is_del", 1).Error
 	if err != nil {
 		return err
 	}

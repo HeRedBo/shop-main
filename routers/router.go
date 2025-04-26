@@ -1,11 +1,12 @@
 package routers
 
 import (
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"shop/internal/controllers/admin"
 	"shop/middleware"
 	"shop/pkg/upload"
+
+	"github.com/gin-gonic/gin"
 )
 
 func InitRouter() *gin.Engine {
@@ -18,10 +19,13 @@ func InitRouter() *gin.Engine {
 	loginController := admin.LoginController{}
 	r.POST("/auth/login", loginController.Login)
 	r.GET("/auth/captcha", loginController.Captcha)
+	// 集成 Swagger
+	//r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	menuController := admin.MenuController{}
 	userController := admin.UserController{}
 	deptController := admin.DeptController{}
 	dictController := admin.DictController{}
+	roleController := admin.RoleController{}
 	dictDetailController := admin.DictDetailController{}
 	logController := admin.LogController{}
 	jobController := admin.JobController{}
@@ -31,6 +35,7 @@ func InitRouter() *gin.Engine {
 	adminRouter := r.Group("/admin")
 	adminRouter.Use(middleware.Jwt()).Use(middleware.Log())
 	{
+
 		adminRouter.GET("/auth/info", loginController.Info)
 		adminRouter.DELETE("/auth/logout", loginController.Logout)
 
@@ -44,7 +49,6 @@ func InitRouter() *gin.Engine {
 		adminRouter.POST("/materialgroup", materialGroupController.Post)
 		adminRouter.PUT("/materialgroup", materialGroupController.Put)
 		adminRouter.DELETE("/materialgroup/:id", materialGroupController.Delete)
-
 		// region 用户中心模块
 		adminRouter.GET("/user", userController.GetAll)
 		adminRouter.POST("/user", userController.Post)
@@ -66,7 +70,14 @@ func InitRouter() *gin.Engine {
 		adminRouter.PUT("/dict", dictController.Put)
 		adminRouter.DELETE("/dict/:id", dictController.Delete)
 		// endregion
-
+		// region 角色管理模块
+		adminRouter.GET("/roles/:id", roleController.GetOne)
+		adminRouter.GET("/roles", roleController.GetAll)
+		adminRouter.POST("/roles", roleController.Post)
+		adminRouter.PUT("/roles", roleController.Put)
+		adminRouter.DELETE("/roles", roleController.Delete)
+		adminRouter.PUT("/roles/menu", roleController.Menu)
+		// endregion
 		// region 数据字典详情模块
 		adminRouter.GET("/dictDetail", dictDetailController.GetAll)
 		adminRouter.POST("/dictDetail", dictDetailController.Post)
@@ -97,12 +108,35 @@ func InitRouter() *gin.Engine {
 		adminRouter.POST("/canvas/saveCanvas", canvasController.Post)
 		// endregion
 	}
-
+	cateController := admin.StoreCategoryController{}
 	ruleController := admin.StoreProductRuleController{}
+	productController := admin.StoreProductController{}
+	orderController := admin.OrderController{}
 	expressController := admin.ExpressController{}
 	shopRouter := r.Group("/shop")
 	shopRouter.Use(middleware.Jwt()).Use(middleware.Log())
 	{
+		// region 商品分类
+		shopRouter.GET("/cate", cateController.GetAll)
+		shopRouter.POST("/cate", cateController.Post)
+		shopRouter.PUT("/cate", cateController.Put)
+		shopRouter.DELETE("/cate", cateController.Delete)
+		// endregion
+		// region 商品分类
+		shopRouter.GET("/product", productController.GetAll)
+		shopRouter.GET("/product/info/:id", productController.GetInfo)
+		shopRouter.POST("/product/isFormatAttr/:id", productController.FormatAttr)
+		shopRouter.POST("/product/addOrSave", productController.Post)
+		shopRouter.POST("/product/onsale/:id", productController.OnSale)
+		shopRouter.DELETE("/product/:id", productController.Delete)
+		// endregion
+		shopRouter.GET("/order", orderController.GetAll)
+		shopRouter.POST("/order/save/:id", orderController.Post)
+		shopRouter.DELETE("/order/:id", orderController.Delete)
+		shopRouter.POST("/order/remark", orderController.Put)
+		shopRouter.PUT("/order", orderController.Deliver)
+		//shopRouter.POST("/order/express", orderController.DeliverQuery)
+
 		// region 快递模块
 		shopRouter.GET("/express", expressController.GetAll)
 		shopRouter.POST("/express", expressController.Post)
@@ -114,7 +148,6 @@ func InitRouter() *gin.Engine {
 		shopRouter.POST("/rule/save/:id", ruleController.Post)
 		shopRouter.DELETE("/rule", ruleController.Delete)
 		// endregion
-
 	}
 
 	wechatMenuController := admin.WechatMenuController{}

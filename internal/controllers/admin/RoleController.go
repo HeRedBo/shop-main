@@ -2,6 +2,7 @@ package admin
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/gookit/goutil/dump"
 	"github.com/unknwon/com"
 	"net/http"
 	"shop/internal/models"
@@ -43,6 +44,7 @@ func (e *RoleController) GetAll(c *gin.Context) {
 		appG = app.Gin{C: c}
 	)
 	blurry := c.DefaultQuery("blurry", "")
+	dump.P(blurry)
 	roleService := role_service.Role{
 		Name:     blurry,
 		PageSize: util.GetSize(c),

@@ -6,3 +6,4 @@ shop
 *.exe
 shop.tar.gz
 tmp/
+.air.toml
