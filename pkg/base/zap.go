@@ -102,7 +102,7 @@ func SetOutput(ws zapcore.WriteSyncer, conf zap.Config) zap.Option {
 	})
 }
 
-// Encoder
+// Encoder 创建日志编码器
 func getEncoder() zapcore.Encoder {
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder

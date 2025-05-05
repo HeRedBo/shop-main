@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/HeRedBo/pkg/cache"
 	"github.com/HeRedBo/pkg/db"
+	"github.com/HeRedBo/pkg/mq"
 	"github.com/HeRedBo/pkg/shutdown"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v7"
@@ -45,11 +46,11 @@ func init() {
 	casbin.InitCasbin(global.Db)
 	jwt.Init()
 
-	//err = mq.InitSyncKafkaProducer(mq.DefaultKafkaSyncProducer, global.CONFIG.Kafka.Hosts, nil)
-	//if err != nil {
-	//	global.LOG.Error("InitSyncKafkaProducer err", err, "client", mq.DefaultKafkaSyncProducer)
-	//	panic(err)
-	//}
+	err = mq.InitSyncKafkaProducer(mq.DefaultKafkaSyncProducer, global.CONFIG.Kafka.Hosts, nil)
+	if err != nil {
+		global.LOG.Error("InitSyncKafkaProducer err", err, "client", mq.DefaultKafkaSyncProducer)
+		panic(err)
+	}
 }
 
 func main() {
@@ -85,11 +86,11 @@ func main() {
 			}
 		},
 		//关闭kafka producer
-		//func() {
-		//	if err := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Close(); err != nil {
-		//		logging.Error("kafka close error", err, "client", mq.DefaultKafkaSyncProducer)
-		//	}
-		//},
+		func() {
+			if err := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Close(); err != nil {
+				logging.Error("kafka close error", err, "client", mq.DefaultKafkaSyncProducer)
+			}
+		},
 		//关闭mysql
 		func() {
 			if err := db.CloseMysqlClient(db.DefaultClient); err != nil {

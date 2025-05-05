@@ -1,7 +1,12 @@
 package admin
 
 import (
+	"encoding/json"
+	"fmt"
+	"github.com/HeRedBo/pkg/mq"
+	"github.com/IBM/sarama"
 	"github.com/gin-gonic/gin"
+	"github.com/gookit/goutil/dump"
 	"github.com/unknwon/com"
 	"net/http"
 	"shop/internal/models"
@@ -9,7 +14,10 @@ import (
 	dto2 "shop/internal/service/product_service/dto"
 	"shop/pkg/app"
 	"shop/pkg/constant"
+	"shop/pkg/enums/product"
+	"shop/pkg/global"
 	"shop/pkg/util"
+	"strconv"
 )
 
 // 商品 api
@@ -76,24 +84,34 @@ func (e *StoreProductController) Post(c *gin.Context) {
 	}
 
 	//发送变更事件消息
-	//defer func() {
-	//	operation := product.OperationCreate
-	//	if dto.Id > 0 {
-	//		operation = product.OperationUpdate
-	//	}
-	//	productMsg := models.ProductMsg{operation, &model}
-	//	msg, _ := json.Marshal(productMsg)
-	//	p, o, e := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Send(
-	//		&sarama.ProducerMessage{
-	//			Topic: product.Topic,
-	//			Key:   mq.KafkaMsgValueStrEncoder(strconv.FormatInt(dto.Id, 10)),
-	//			Value: mq.KafkaMsgValueEncoder(msg),
-	//		},
-	//	)
-	//	if e != nil {
-	//		global.LOG.Error("send msg error", e, "partion:", p, "offset", o, "id", dto.Id)
-	//	}
-	//}()
+	defer func() {
+		fmt.Println("Defer function executed") // 简单验证
+
+		defer func() {
+			if r := recover(); r != nil {
+				global.LOG.Error("Defer panic recovered:", r)
+			}
+		}()
+
+		operation := product.OperationCreate
+		if dto.Id > 0 {
+			operation = product.OperationUpdate
+		}
+		productMsg := models.ProductMsg{Operation: operation, StoreProduct: &model}
+		msg, _ := json.Marshal(productMsg)
+		dump.P(msg)
+		p, o, e := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Send(
+			&sarama.ProducerMessage{
+				Topic: product.Topic,
+				Key:   mq.KafkaMsgValueStrEncoder(strconv.FormatInt(dto.Id, 10)),
+				Value: mq.KafkaMsgValueEncoder(msg),
+			},
+		)
+		dump.P(p, o, e)
+		if e != nil {
+			global.LOG.Error("send msg error", e, "partion:", p, "offset", o, "id", dto.Id)
+		}
+	}()
 
 	appG.Response(http.StatusOK, constant.SUCCESS, model)
 
@@ -125,26 +143,31 @@ func (e *StoreProductController) OnSale(c *gin.Context) {
 	}
 
 	//发送变更事件消息
-	//defer func() {
-	//	operation := product.OperationOnSale
-	//	if dto.Status == 0 {
-	//		operation = product.OperationUnSale
-	//	}
-	//	productInfo := models.GetProduct(id)
-	//
-	//	productMsg := models.ProductMsg{operation, &productInfo}
-	//	msg, _ := json.Marshal(productMsg)
-	//	p, o, e := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Send(
-	//		&sarama.ProducerMessage{
-	//			Topic: product.Topic,
-	//			Key:   mq.KafkaMsgValueStrEncoder(strconv.FormatInt(id, 10)),
-	//			Value: mq.KafkaMsgValueEncoder(msg),
-	//		},
-	//	)
-	//	if e != nil {
-	//		global.LOG.Error("send msg error", e, "partion:", p, "offset", o, "id", id)
-	//	}
-	//}()
+	defer func() {
+		defer func() {
+			if r := recover(); r != nil {
+				global.LOG.Error("Defer panic recovered:", r)
+			}
+		}()
+
+		operation := product.OperationOnSale
+		if dto.Status == 0 {
+			operation = product.OperationUnSale
+		}
+		productInfo := models.GetProduct(id)
+		productMsg := models.ProductMsg{Operation: operation, StoreProduct: &productInfo}
+		msg, _ := json.Marshal(productMsg)
+		p, o, e := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Send(
+			&sarama.ProducerMessage{
+				Topic: product.Topic,
+				Key:   mq.KafkaMsgValueStrEncoder(strconv.FormatInt(id, 10)),
+				Value: mq.KafkaMsgValueEncoder(msg),
+			},
+		)
+		if e != nil {
+			global.LOG.Error("send msg error", e, "partion:", p, "offset", o, "id", id)
+		}
+	}()
 
 	appG.Response(http.StatusOK, constant.SUCCESS, nil)
 
@@ -155,6 +178,7 @@ func (e *StoreProductController) OnSale(c *gin.Context) {
 // @Success 200 {object} app.Response
 // @router /:id [delete]
 func (e *StoreProductController) Delete(c *gin.Context) {
+
 	var (
 		ids  []int64
 		appG = app.Gin{C: c}
@@ -174,21 +198,21 @@ func (e *StoreProductController) Delete(c *gin.Context) {
 	}
 
 	////发送变更事件消息
-	//defer func() {
-	//	operation := product.OperationDelete
-	//	productMsg := models.ProductMsg{operation, &productInfo}
-	//	msg, _ := json.Marshal(productMsg)
-	//	p, o, e := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Send(
-	//		&sarama.ProducerMessage{
-	//			Topic: product.Topic,
-	//			Key:   mq.KafkaMsgValueStrEncoder(strconv.FormatInt(id, 10)),
-	//			Value: mq.KafkaMsgValueEncoder(msg),
-	//		},
-	//	)
-	//	if e != nil {
-	//		global.LOG.Error("send msg error", e, "partion:", p, "offset", o, "id", id)
-	//	}
-	//}()
+	defer func() {
+		operation := product.OperationDelete
+		productMsg := models.ProductMsg{Operation: operation, StoreProduct: &productInfo}
+		msg, _ := json.Marshal(productMsg)
+		p, o, e := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Send(
+			&sarama.ProducerMessage{
+				Topic: product.Topic,
+				Key:   mq.KafkaMsgValueStrEncoder(strconv.FormatInt(id, 10)),
+				Value: mq.KafkaMsgValueEncoder(msg),
+			},
+		)
+		if e != nil {
+			global.LOG.Error("send msg error", e, "partion:", p, "offset", o, "id", id)
+		}
+	}()
 
 	appG.Response(http.StatusOK, constant.SUCCESS, nil)
 }
