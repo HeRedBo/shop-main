@@ -247,8 +247,8 @@ func GetAdminUser(c *gin.Context) (*vo.JwtUser, error) {
 
 // GetAdminDetailUser 返回 detail user
 func GetAdminDetailUser(c *gin.Context) *models.SysUser {
-	mytoken := c.Request.Header.Get("Authorization")
-	token := strings.TrimSpace(mytoken[bearerLength:])
+	myToken := c.Request.Header.Get("Authorization")
+	token := strings.TrimSpace(myToken[bearerLength:])
 	var key = constant.RedisPrefixAuth + token
 	val, err := cache.GetRedisClient(cache.DefaultRedisClient).GetStr(key)
 	if err != nil {
@@ -259,7 +259,10 @@ func GetAdminDetailUser(c *gin.Context) *models.SysUser {
 	userMap[key] = val
 	jsonStr := userMap[key]
 	user := &models.SysUser{}
-	json.Unmarshal([]byte(jsonStr), user)
+	err = json.Unmarshal([]byte(jsonStr), user)
+	if err != nil {
+		return nil
+	}
 	return user
 }
 

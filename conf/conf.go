@@ -67,7 +67,7 @@ type Zap struct {
 	LogFilePath     string `mapstructure:"log-filepath" yaml:"log-filepath"`
 	LogInfoFileName string `mapstructure:"log-info-filename" yaml:"log-info-filename"`
 	LogWarnFileName string `mapstructure:"log-warn-filename" yaml:"log-warn-filename"`
-	LogFileExt      string `mapstructure:"log-fiile-ext" yaml:"log-fiile-ext"`
+	LogFileExt      string `mapstructure:"log-file-ext" yaml:"log-file-ext"`
 	LogConsole      bool   `mapstructure:"log-console" yaml:"log-console"`
 }
 
@@ -77,7 +77,7 @@ type Kafka struct {
 
 type Wechat struct {
 	AppID          string `mapstructure:"app_id" yaml:"app_id"`                     //appid
-	AppSecret      string `mapstructure:"app_secret" yaml:"app_secret"`             //appsecret
+	AppSecret      string `mapstructure:"app_secret" yaml:"app_secret"`             //app_secret
 	Token          string `mapstructure:"token" yaml:"token"`                       //token
 	EncodingAESKey string `mapstructure:"encoding_aes_key" yaml:"encoding_aes_key"` //EncodingAESKey
 }

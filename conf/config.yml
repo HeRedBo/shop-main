@@ -45,7 +45,7 @@ zap:
   log-filepath: 'runtime/logs'
   log-info-filename: 'info'
   log-warn-filename: 'warn'
-  log-fiile-ext: 'log'
+  log-file-ext: 'log'
   log-console: true
 
 wechat:

@@ -3,6 +3,7 @@ package routers
 import (
 	"net/http"
 	"shop/internal/controllers/admin"
+	"shop/internal/controllers/front"
 	"shop/middleware"
 	"shop/pkg/upload"
 
@@ -174,5 +175,38 @@ func InitRouter() *gin.Engine {
 		wechatRouter.GET("/article/publish/:id", articleController.Pub)
 		// endregion
 	}
+
+	// region 用户端API
+
+	// region 用户端-非授权
+	ApiLoginController := new(front.LoginController)
+	ApiIndexController := new(front.IndexController)
+	ApiCategoryController := new(front.CategoryController)
+	ApiProductController := new(front.ProductController)
+	apiv1 := r.Group("/api/v1")
+	{
+		// region 授权模块
+		apiv1.POST("/login", ApiLoginController.Login)
+		apiv1.POST("/register", ApiLoginController.Reg)
+		apiv1.POST("/register/verify", ApiLoginController.Verify)
+		// endregion
+
+		// region 首页部分
+		apiv1.GET("/index", ApiIndexController.GetIndex)
+		apiv1.POST("/getCanvas", ApiIndexController.GetCanvas)
+		// endregion
+		// region 分类
+		apiv1.GET("/category", ApiCategoryController.GetCateList)
+		// endregion
+		// region 产品部分
+		apiv1.GET("/products", ApiProductController.GoodsList)
+		// apiv1.GET("/product/search", ApiProductController.GoodsSearch)
+		apiv1.GET("/product/detail/:id", ApiProductController.GoodDetail)
+		apiv1.GET("/product/hot", ApiProductController.GoodsRecommendList)
+		apiv1.GET("/reply/list/:id", ApiProductController.ReplyList)
+		// endregion
+	}
+
+	// endregion
 	return r
 }

@@ -6,7 +6,9 @@ require (
 	github.com/HeRedBo/pkg/cache v0.0.0-20250421154535-ac0072629fbe
 	github.com/HeRedBo/pkg/db v0.0.0-20250420065555-ee1554f86e30
 	github.com/HeRedBo/pkg/file v1.0.0
+	github.com/HeRedBo/pkg/mq v0.0.0-20250423101152-64fca6d7ed67
 	github.com/HeRedBo/pkg/shutdown v0.0.0-20250421154535-ac0072629fbe
+	github.com/IBM/sarama v1.45.1
 	github.com/astaxie/beego v1.12.3
 	github.com/casbin/casbin/v2 v2.100.0
 	github.com/casbin/gorm-adapter/v3 v3.32.0
@@ -33,8 +35,6 @@ require (
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/HeRedBo/pkg/errors v1.0.0 // indirect
-	github.com/HeRedBo/pkg/mq v0.0.0-20250423101152-64fca6d7ed67 // indirect
-	github.com/IBM/sarama v1.45.1 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/bradfitz/gomemcache v0.0.0-20220106215444-fb4bf637b56d // indirect
 	github.com/bytedance/sonic v1.13.2 // indirect

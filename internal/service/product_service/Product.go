@@ -2,11 +2,14 @@ package product_service
 
 import (
 	"encoding/json"
+	"errors"
+	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
 	"github.com/unknwon/com"
 	"shop/internal/models"
 	"shop/internal/models/vo"
 	"shop/internal/service/cate_service"
+	"shop/internal/service/product_relation_service"
 	"shop/internal/service/product_rule_service"
 	productDto "shop/internal/service/product_service/dto"
 	proVo "shop/internal/service/product_service/vo"
@@ -149,6 +152,107 @@ func (d *Product) GetProductByIDs() []proVo.Product {
 		global.LOG.Error(e)
 	}
 	return productListVo
+}
+
+func (d *Product) GetDetail() (*proVo.ProductDetail, error) {
+	var (
+		storeProduct models.StoreProduct
+		productVo    proVo.Product
+		err          error
+	)
+
+	// 获取产品信息
+	err = global.Db.Model(&models.StoreProduct{}).
+		Where("id = ?", d.Id).
+		First(&storeProduct).Error
+	if err != nil {
+		global.LOG.Error(err)
+		return nil, errors.New("获取商品失败")
+	}
+
+	//获取sku
+	returnMap, err := getProductAttrDetail(d.Id)
+	if err != nil {
+		global.LOG.Error(err)
+		return nil, errors.New("获取商品sku失败")
+	}
+	err = copier.Copy(&productVo, storeProduct)
+	productVo.SliderImageArr = strings.Split(storeProduct.SliderImage, ",")
+	if err != nil {
+		global.LOG.Error(err)
+		return nil, errors.New("商品转化失败")
+	}
+	//此处处理登录的用户
+	//todo
+	if d.Uid > 0 {
+		isCollect := product_relation_service.IsRelation(d.Id, d.Uid)
+		productVo.UserCollect = isCollect
+	}
+	//此处处理已经评论的数量-移动端需要，单个评价与好评旅，好评数量
+	//todo
+	//此处处理运费模板
+	//todo
+	detail := proVo.ProductDetail{
+		StoreInfo:    productVo,
+		ProductAttr:  returnMap["product_attr"].([]proVo.ProductAttr),
+		ProductValue: returnMap["product_value"].(map[string]models.StoreProductAttrValue),
+	}
+	return &detail, nil
+}
+
+// 获取商品sku
+func getProductAttrDetail(productId int64) (map[string]interface{}, error) {
+	var (
+		storeProductAttrs    []models.StoreProductAttr
+		productAttrValues    []models.StoreProductAttrValue
+		mapp                 map[string]models.StoreProductAttrValue
+		storeProductAttrList []proVo.ProductAttr
+		err                  error
+	)
+	err = global.Db.Model(&models.StoreProductAttr{}).
+		Where("product_id = ?", productId).
+		Order("attr_values asc").Find(&storeProductAttrs).Error
+	if err != nil {
+		global.LOG.Error(err)
+		return nil, err
+	}
+
+	err = global.Db.Model(&models.StoreProductAttrValue{}).
+		Where("product_id = ?", productId).
+		Find(&productAttrValues).Error
+	if err != nil {
+		global.LOG.Error(err)
+		return nil, err
+	}
+	err = util.StructColumn(&mapp, productAttrValues, "", "Sku")
+	if err != nil {
+		return nil, err
+	}
+	for _, attr := range storeProductAttrs {
+		stringList := strings.Split(attr.AttrValues, ",")
+		var attrValues []productDto.AttrValue
+		for _, str := range stringList {
+			attrValue := productDto.AttrValue{
+				Attr: str,
+			}
+			attrValues = append(attrValues, attrValue)
+		}
+		var attrVo proVo.ProductAttr
+		err = copier.Copy(&attrVo, attr)
+		if err != nil {
+			global.LOG.Error(err)
+			return nil, err
+		}
+		attrVo.AttrValue = attrValues
+		attrVo.AttrValueArr = stringList
+		storeProductAttrList = append(storeProductAttrList, attrVo)
+	}
+
+	returnMap := gin.H{
+		"product_attr":  storeProductAttrList,
+		"product_value": mapp,
+	}
+	return returnMap, nil
 }
 
 func (d *Product) GetAll() vo.ResultList {
