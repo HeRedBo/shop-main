@@ -194,6 +194,7 @@ func InitRouter() *gin.Engine {
 		// region 首页部分
 		apiv1.GET("/index", ApiIndexController.GetIndex)
 		apiv1.POST("/getCanvas", ApiIndexController.GetCanvas)
+		apiv1.POST("/upload", ApiIndexController.Upload)
 		// endregion
 		// region 分类
 		apiv1.GET("/category", ApiCategoryController.GetCateList)
@@ -206,7 +207,30 @@ func InitRouter() *gin.Engine {
 		apiv1.GET("/reply/list/:id", ApiProductController.ReplyList)
 		// endregion
 	}
+	// endregion
 
+	// region 需要授权接口
+	ApiUserController := new(front.UserController)
+	ApiCartController := new(front.CartController)
+	authApiv1 := r.Group("/api/v1").Use(middleware.AppJwt())
+	{
+		// region 用户模块
+		authApiv1.GET("/userinfo", ApiUserController.GetUerInfo)
+		authApiv1.GET("/collect/user", ApiUserController.CollectUser)
+		// endregion
+
+		authApiv1.POST("/collect/add", ApiProductController.AddCollect)
+		authApiv1.POST("/collect/del", ApiProductController.DelCollect)
+
+		// region 购物车
+		authApiv1.POST("/cart/add", ApiCartController.AddCart)
+		authApiv1.GET("/cart/count", ApiCartController.Count)
+		authApiv1.GET("/carts", ApiCartController.CartList)
+		authApiv1.POST("/cart/num", ApiCartController.CartNum)
+		authApiv1.POST("/cart/del", ApiCartController.DelCart)
+		// endregion
+
+	}
 	// endregion
 	return r
 }
