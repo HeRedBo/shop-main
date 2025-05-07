@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"github.com/astaxie/beego/logs"
 	"github.com/gin-gonic/gin"
 	"github.com/unknwon/com"
 	"net/http"
@@ -113,7 +112,6 @@ func (e *MenuController) Build(c *gin.Context) {
 	)
 	uid, _ := jwt.GetAdminUserId(c)
 	menuService := menu_service.Menu{Uid: uid}
-	logs.Info(uid)
 	menus := menuService.BuildMenus()
 	appG.Response(http.StatusOK, constant.SUCCESS, menus)
 }

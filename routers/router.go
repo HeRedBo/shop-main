@@ -244,7 +244,6 @@ func InitRouter() *gin.Engine {
 		authApiV1.POST("/order/take", ApiOrderController.TakeOrder)
 		authApiV1.POST("/order/comments/:key", ApiOrderController.OrderComment)
 		authApiV1.POST("/order/cancel", ApiOrderController.CancelOrder)
-		authApiV1.GET("/collect/user", ApiUserController.CollectUser)
 		// endregion
 	}
 	// endregion

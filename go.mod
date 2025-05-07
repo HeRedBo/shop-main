@@ -16,6 +16,7 @@ require (
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/gin-gonic/gin v1.10.0
 	github.com/go-pay/gopay v1.5.112
+	github.com/go-pay/util v0.0.4
 	github.com/go-redis/redis/v7 v7.4.1
 	github.com/gookit/goutil v0.6.18
 	github.com/jinzhu/copier v0.4.0
@@ -56,7 +57,6 @@ require (
 	github.com/glebarez/go-sqlite v1.20.3 // indirect
 	github.com/glebarez/sqlite v1.7.0 // indirect
 	github.com/go-pay/crypto v0.0.1 // indirect
-	github.com/go-pay/util v0.0.4 // indirect
 	github.com/go-pay/xlog v0.0.3 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
