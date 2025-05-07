@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/HeRedBo/pkg/cache"
+	"github.com/HeRedBo/pkg/mq"
+	"github.com/IBM/sarama"
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
 	"github.com/segmentio/ksuid"
+	"github.com/shopspring/decimal"
 	"github.com/unknwon/com"
 	"gorm.io/gorm"
 	"shop/internal/models"
@@ -16,6 +19,7 @@ import (
 	cartVo "shop/internal/service/cart_service/vo"
 	orderDto "shop/internal/service/order_service/dto"
 	ordervo "shop/internal/service/order_service/vo"
+	userVO "shop/internal/service/wechat_user_service/vo"
 	"shop/pkg/constant"
 	orderEnum "shop/pkg/enums/order"
 	"shop/pkg/global"
@@ -551,6 +555,55 @@ func (o *Order) ComputeOrder() (*ordervo.Compute, error) {
 	}, nil
 }
 
+// 确认订单
+func (o *Order) ConfirmOrder() (*ordervo.ConfirmOrder, error) {
+	cartService := cart_service.Cart{
+		Uid:     o.Uid,
+		CartIds: o.CartId,
+		Status:  1,
+	}
+
+	vo := cartService.GetCartList()
+	invalid := vo["invalid"].([]cartVo.Cart)
+	valid := vo["valid"].([]cartVo.Cart)
+	if len(invalid) > 0 {
+		return nil, errors.New("有失效的购物车，请重新提交")
+	}
+	if len(valid) == 0 {
+		return nil, errors.New("请提交购买的商品")
+	}
+
+	var (
+		deduction      = false //抵扣
+		enableIntegral = true  //积分
+		userAddress    models.UserAddress
+	)
+	//获取默认地址
+	global.Db.Model(&models.UserAddress{}).
+		Where("uid = ?", o.Uid).
+		Where("is_default = ?", 1).
+		First(&userAddress)
+	priceGroup := getOrderPriceGroup(valid)
+	cacheKey := cacheOrderInfo(o.Uid, valid, priceGroup, orderDto.Other{})
+	//优惠券 todo
+	var user userVO.User
+
+	e := copier.Copy(&user, o.User)
+	if e != nil {
+		global.LOG.Error(e)
+	}
+	return &ordervo.ConfirmOrder{
+		AddressInfo:    userAddress,
+		CartInfo:       valid,
+		PriceGroup:     priceGroup,
+		UserInfo:       user,
+		OrderKey:       cacheKey,
+		Deduction:      deduction,
+		EnableIntegral: enableIntegral,
+	}, nil
+
+}
+
 func cacheOrderInfo(uid int64, cartInfo []cartVo.Cart, priceGroup orderDto.PriceGroup, other orderDto.Other) string {
 	uuid := ksuid.New()
 	key := uuid.String()
@@ -577,6 +630,38 @@ func getCacheOrderInfo(uid int64, key string) (orderDto.Cache, error) {
 	var orderCache orderDto.Cache
 	json.Unmarshal([]byte(val), &orderCache)
 	return orderCache, nil
+}
+
+func getOrderPriceGroup(cartInfo []cartVo.Cart) orderDto.PriceGroup {
+	var (
+		//storePostage float64
+		//storeFreePostage float64
+		totalPrice float64
+		costPrice  float64
+		//vipPrice float64
+		//payIntegral float64
+	)
+	//计算价格
+	for _, val := range cartInfo {
+		dc1 := decimal.NewFromFloat(val.TruePrice).Mul(decimal.NewFromFloat(float64(val.CartNum)))
+		sum1, _ := dc1.Float64()
+		totalPrice = totalPrice + sum1
+
+		dc2 := decimal.NewFromFloat(val.CostPrice).Mul(decimal.NewFromFloat(float64(val.CartNum)))
+		sum2, _ := dc2.Float64()
+		costPrice = costPrice + sum2
+		//
+		//dc3 := decimal.NewFromFloat(val.VipTruePrice).Mul(decimal.NewFromFloat(float64(val.CartNum)))
+		//sum3,_ := dc3.Float64()
+		//vipPrice = vipPrice + sum3
+
+	}
+
+	return orderDto.PriceGroup{
+		//StoreFreePostage: storeFreePostage,
+		TotalPrice: totalPrice,
+		CostPrice:  costPrice,
+	}
 }
 
 func (o *Order) GetAll() vo.ResultList {
@@ -731,4 +816,19 @@ func (o *Order) Deliver() error {
 	o.M.Status = 1
 	o.M.DeliverySn = express.Code
 	return models.UpdateByStoreOrder(o.M)
+}
+
+func (o *Order) OrderEvent(operation string) {
+	orderMsg := models.OrderMsg{Operation: operation, StoreOrder: o.M}
+	msg, err := json.Marshal(orderMsg)
+	if err != nil {
+		global.LOG.Error("json.Marshal error", o)
+		return
+	}
+	partion, offset, err := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Send(
+		&sarama.ProducerMessage{Key: mq.KafkaMsgValueStrEncoder(strconv.FormatInt(o.Uid, 10)),
+			Value: mq.KafkaMsgValueEncoder(msg), Topic: orderEnum.Topic})
+	if err != nil {
+		global.LOG.Error("KafkaSyncProducer error", err, "partion : ", partion, "offset : ", offset)
+	}
 }

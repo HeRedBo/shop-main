@@ -183,53 +183,61 @@ func InitRouter() *gin.Engine {
 	ApiIndexController := new(front.IndexController)
 	ApiCategoryController := new(front.CategoryController)
 	ApiProductController := new(front.ProductController)
-	apiv1 := r.Group("/api/v1")
+	ApiOrderController := new(front.OrderController)
+	apiV1 := r.Group("/api/v1")
 	{
 		// region 授权模块
-		apiv1.POST("/login", ApiLoginController.Login)
-		apiv1.POST("/register", ApiLoginController.Reg)
-		apiv1.POST("/register/verify", ApiLoginController.Verify)
+		apiV1.POST("/login", ApiLoginController.Login)
+		apiV1.POST("/register", ApiLoginController.Reg)
+		apiV1.POST("/register/verify", ApiLoginController.Verify)
 		// endregion
 
 		// region 首页部分
-		apiv1.GET("/index", ApiIndexController.GetIndex)
-		apiv1.POST("/getCanvas", ApiIndexController.GetCanvas)
-		apiv1.POST("/upload", ApiIndexController.Upload)
+		apiV1.GET("/index", ApiIndexController.GetIndex)
+		apiV1.POST("/getCanvas", ApiIndexController.GetCanvas)
+		apiV1.POST("/upload", ApiIndexController.Upload)
 		// endregion
 		// region 分类
-		apiv1.GET("/category", ApiCategoryController.GetCateList)
+		apiV1.GET("/category", ApiCategoryController.GetCateList)
 		// endregion
 		// region 产品部分
-		apiv1.GET("/products", ApiProductController.GoodsList)
+		apiV1.GET("/products", ApiProductController.GoodsList)
 		// apiv1.GET("/product/search", ApiProductController.GoodsSearch)
-		apiv1.GET("/product/detail/:id", ApiProductController.GoodDetail)
-		apiv1.GET("/product/hot", ApiProductController.GoodsRecommendList)
-		apiv1.GET("/reply/list/:id", ApiProductController.ReplyList)
+		apiV1.GET("/product/detail/:id", ApiProductController.GoodDetail)
+		apiV1.GET("/product/hot", ApiProductController.GoodsRecommendList)
+		apiV1.GET("/reply/list/:id", ApiProductController.ReplyList)
 		// endregion
+		apiV1.Any("/order/notify", ApiOrderController.NotifyPay)
 	}
 	// endregion
 
 	// region 需要授权接口
 	ApiUserController := new(front.UserController)
 	ApiCartController := new(front.CartController)
-	authApiv1 := r.Group("/api/v1").Use(middleware.AppJwt())
+
+	authApiV1 := r.Group("/api/v1").Use(middleware.AppJwt())
 	{
 		// region 用户模块
-		authApiv1.GET("/userinfo", ApiUserController.GetUerInfo)
-		authApiv1.GET("/collect/user", ApiUserController.CollectUser)
+		authApiV1.GET("/userinfo", ApiUserController.GetUerInfo)
+		authApiV1.GET("/collect/user", ApiUserController.CollectUser)
 		// endregion
 
-		authApiv1.POST("/collect/add", ApiProductController.AddCollect)
-		authApiv1.POST("/collect/del", ApiProductController.DelCollect)
+		authApiV1.POST("/collect/add", ApiProductController.AddCollect)
+		authApiV1.POST("/collect/del", ApiProductController.DelCollect)
 
 		// region 购物车
-		authApiv1.POST("/cart/add", ApiCartController.AddCart)
-		authApiv1.GET("/cart/count", ApiCartController.Count)
-		authApiv1.GET("/carts", ApiCartController.CartList)
-		authApiv1.POST("/cart/num", ApiCartController.CartNum)
-		authApiv1.POST("/cart/del", ApiCartController.DelCart)
+		authApiV1.POST("/cart/add", ApiCartController.AddCart)
+		authApiV1.GET("/cart/count", ApiCartController.Count)
+		authApiV1.GET("/carts", ApiCartController.CartList)
+		authApiV1.POST("/cart/num", ApiCartController.CartNum)
+		authApiV1.POST("/cart/del", ApiCartController.DelCart)
 		// endregion
 
+		authApiV1.POST("/order/confirm", ApiOrderController.Confirm)
+		authApiV1.POST("/order/computed/:key", ApiOrderController.Compute)
+		authApiV1.POST("/order/create/:key", ApiOrderController.Create)
+		authApiV1.POST("/order/pay", ApiOrderController.Pay)
+		
 	}
 	// endregion
 	return r

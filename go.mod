@@ -15,6 +15,7 @@ require (
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/gin-gonic/gin v1.10.0
+	github.com/go-pay/gopay v1.5.112
 	github.com/go-redis/redis/v7 v7.4.1
 	github.com/gookit/goutil v0.6.18
 	github.com/jinzhu/copier v0.4.0
@@ -22,6 +23,7 @@ require (
 	github.com/mojocn/base64Captcha v1.3.8
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/segmentio/ksuid v1.0.4
+	github.com/shopspring/decimal v1.4.0
 	github.com/silenceper/wechat/v2 v2.1.8
 	github.com/spf13/viper v1.20.1
 	github.com/unknwon/com v1.0.1
@@ -53,6 +55,9 @@ require (
 	github.com/gin-contrib/sse v1.1.0 // indirect
 	github.com/glebarez/go-sqlite v1.20.3 // indirect
 	github.com/glebarez/sqlite v1.7.0 // indirect
+	github.com/go-pay/crypto v0.0.1 // indirect
+	github.com/go-pay/util v0.0.4 // indirect
+	github.com/go-pay/xlog v0.0.3 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.26.0 // indirect
