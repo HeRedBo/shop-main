@@ -194,7 +194,7 @@ func InitRouter() *gin.Engine {
 
 		// region 首页部分
 		apiV1.GET("/index", ApiIndexController.GetIndex)
-		apiV1.POST("/getCanvas", ApiIndexController.GetCanvas)
+		apiV1.GET("/getCanvas", ApiIndexController.GetCanvas)
 		apiV1.POST("/upload", ApiIndexController.Upload)
 		// endregion
 		// region 分类

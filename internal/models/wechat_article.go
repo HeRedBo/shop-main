@@ -35,14 +35,14 @@ func (a *WechatArticle) Valid(v *validation.Validation) {
 }
 
 // get all
-func GetAllWechatArticle(pageNUm int, pageSize int, maps interface{}) (int64, []WechatArticle) {
+func GetAllWechatArticle(PageNum int, pageSize int, maps interface{}) (int64, []WechatArticle) {
 	var (
 		total int64
 		data  []WechatArticle
 	)
 
 	global.Db.Model(&WechatArticle{}).Where(maps).Count(&total)
-	global.Db.Where(maps).Offset(pageNUm).Limit(pageSize).Order("id desc").Find(&data)
+	global.Db.Where(maps).Offset(PageNum).Limit(pageSize).Order("id desc").Find(&data)
 
 	return total, data
 }

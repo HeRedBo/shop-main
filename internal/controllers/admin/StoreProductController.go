@@ -6,7 +6,6 @@ import (
 	"github.com/HeRedBo/pkg/mq"
 	"github.com/IBM/sarama"
 	"github.com/gin-gonic/gin"
-	"github.com/gookit/goutil/dump"
 	"github.com/unknwon/com"
 	"net/http"
 	"shop/internal/models"
@@ -99,7 +98,6 @@ func (e *StoreProductController) Post(c *gin.Context) {
 		}
 		productMsg := models.ProductMsg{Operation: operation, StoreProduct: &model}
 		msg, _ := json.Marshal(productMsg)
-		dump.P(msg)
 		p, o, e := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Send(
 			&sarama.ProducerMessage{
 				Topic: product.Topic,
@@ -107,7 +105,6 @@ func (e *StoreProductController) Post(c *gin.Context) {
 				Value: mq.KafkaMsgValueEncoder(msg),
 			},
 		)
-		dump.P(p, o, e)
 		if e != nil {
 			global.LOG.Error("send msg error", e, "partion:", p, "offset", o, "id", dto.Id)
 		}

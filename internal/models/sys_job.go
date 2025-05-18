@@ -1,6 +1,9 @@
 package models
 
-import "shop/pkg/global"
+import (
+	"gorm.io/gorm"
+	"shop/pkg/global"
+)
 
 type SysJob struct {
 	Name    string   `json:"name" valid:"Required;"`
@@ -23,7 +26,9 @@ func GetAllJob(pageNUm int, pageSize int, maps interface{}) (int64, []SysJob) {
 	)
 
 	global.Db.Model(&SysJob{}).Where(maps).Count(&total)
-	global.Db.Where(maps).Offset(pageNUm).Limit(pageSize).Preload("Dept").Find(&lists)
+	global.Db.Where(maps).Offset(pageNUm).Limit(pageSize).Preload("Dept", func(db *gorm.DB) *gorm.DB {
+		return db.Select("Id", "Name", "Pid") // 关联模型字段
+	}).Find(&lists)
 
 	return total, lists
 }
