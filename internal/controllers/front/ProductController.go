@@ -42,34 +42,34 @@ func (e *ProductController) GoodsList(c *gin.Context) {
 	appG.ResponsePage(http.StatusOK, constant.SUCCESS, vo, total, page)
 }
 
-//func (e *ProductController) GoodsSearch(c *gin.Context) {
-//	var appG = app.Gin{C: c}
-//	productService := product_service.Product{
-//		Name:       c.Query("keyword"),
-//		Enabled:    1,
-//		PageNum:    util.GetFrontPage(c),
-//		PageSize:   util.GetFrontLimit(c),
-//		Sid:        c.Query("sid"),
-//		News:       c.Query("news"),
-//		PriceOrder: c.Query("price_order"),
-//		SalesOrder: c.Query("sales_order"),
-//	}
-//	if len(productService.Name) == 0 {
-//		vo, total, page := productService.GetList()
-//		appG.ResponsePage(http.StatusOK, constant.SUCCESS, vo, total, page)
-//		return
-//	}
-//	userid, _ := jwt.GetAppUserId(c)
-//	productService.Uid = userid
-//	vo, total, page := productService.SearchGoods()
-//	if vo == nil {
-//		appG.ResponsePage(http.StatusInternalServerError, constant.ERROR, nil, total, page)
-//		return
-//	}
-//	appG.ResponsePage(http.StatusOK, constant.SUCCESS, vo, total, page)
-//	return
-//
-//}
+func (e *ProductController) GoodsSearch(c *gin.Context) {
+	var appG = app.Gin{C: c}
+	productService := product_service.Product{
+		Name:       c.Query("keyword"),
+		Enabled:    1,
+		PageNum:    util.GetFrontPage(c),
+		PageSize:   util.GetFrontLimit(c),
+		Sid:        c.Query("sid"),
+		News:       c.Query("news"),
+		PriceOrder: c.Query("price_order"),
+		SalesOrder: c.Query("sales_order"),
+	}
+	if len(productService.Name) == 0 {
+		vo, total, page := productService.GetList()
+		appG.ResponsePage(http.StatusOK, constant.SUCCESS, vo, total, page)
+		return
+	}
+	userid, _ := jwt.GetAppUserId(c)
+	productService.Uid = userid
+	vo, total, page := productService.SearchGoods()
+	if vo == nil {
+		appG.ResponsePage(http.StatusInternalServerError, constant.ERROR, nil, total, page)
+		return
+	}
+	appG.ResponsePage(http.StatusOK, constant.SUCCESS, vo, total, page)
+	return
+
+}
 
 // GoodsRecommendList 获取推荐商品列表
 // @Title 获取推荐商品

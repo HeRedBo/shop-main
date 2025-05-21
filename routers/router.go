@@ -202,7 +202,7 @@ func InitRouter() *gin.Engine {
 		// endregion
 		// region 产品部分
 		apiV1.GET("/products", ApiProductController.GoodsList)
-		// apiv1.GET("/product/search", ApiProductController.GoodsSearch)
+		apiV1.GET("/product/search", ApiProductController.GoodsSearch)
 		apiV1.GET("/product/detail/:id", ApiProductController.GoodDetail)
 		apiV1.GET("/product/hot", ApiProductController.GoodsRecommendList)
 		apiV1.GET("/reply/list/:id", ApiProductController.ReplyList)
