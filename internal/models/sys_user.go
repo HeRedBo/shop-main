@@ -75,8 +75,7 @@ func GetUserByUsername(name string) (*SysUser, error) {
 	return nil, err
 }
 
-// GetUserById retrieves User by Id. Returns error if
-// Id doesn't exist
+// GetUserById retrieves User by id. Returns error if id doesn't exist
 func GetUserById(id int64) (SysUser, error) {
 	var user SysUser
 	var err error

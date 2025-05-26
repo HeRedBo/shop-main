@@ -40,6 +40,11 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.14.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.7.0 // indirect
 	github.com/HeRedBo/pkg/errors v1.0.0 // indirect
+	github.com/HeRedBo/pkg/httpclient v0.0.0-20250518092132-658893059cf6 // indirect
+	github.com/HeRedBo/pkg/sign v0.0.0-20250521224933-16789602bd01 // indirect
+	github.com/HeRedBo/pkg/strutil v0.0.0-20250518092132-658893059cf6 // indirect
+	github.com/HeRedBo/pkg/timeutil v0.0.0-20250518092132-658893059cf6 // indirect
+	github.com/HeRedBo/pkg/trace v0.0.0-20250518050431-4d871bc5b716 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/bradfitz/gomemcache v0.0.0-20220106215444-fb4bf637b56d // indirect
 	github.com/bytedance/sonic v1.13.2 // indirect

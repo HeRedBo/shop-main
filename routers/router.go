@@ -194,7 +194,7 @@ func InitRouter() *gin.Engine {
 
 		// region 首页部分
 		apiV1.GET("/index", ApiIndexController.GetIndex)
-		apiV1.POST("/getCanvas", ApiIndexController.GetCanvas)
+		apiV1.GET("/getCanvas", ApiIndexController.GetCanvas)
 		apiV1.POST("/upload", ApiIndexController.Upload)
 		// endregion
 		// region 分类
@@ -202,7 +202,7 @@ func InitRouter() *gin.Engine {
 		// endregion
 		// region 产品部分
 		apiV1.GET("/products", ApiProductController.GoodsList)
-		// apiv1.GET("/product/search", ApiProductController.GoodsSearch)
+		apiV1.GET("/product/search", ApiProductController.GoodsSearch)
 		apiV1.GET("/product/detail/:id", ApiProductController.GoodDetail)
 		apiV1.GET("/product/hot", ApiProductController.GoodsRecommendList)
 		apiV1.GET("/reply/list/:id", ApiProductController.ReplyList)
@@ -244,7 +244,6 @@ func InitRouter() *gin.Engine {
 		authApiV1.POST("/order/take", ApiOrderController.TakeOrder)
 		authApiV1.POST("/order/comments/:key", ApiOrderController.OrderComment)
 		authApiV1.POST("/order/cancel", ApiOrderController.CancelOrder)
-		authApiV1.GET("/collect/user", ApiUserController.CollectUser)
 		// endregion
 	}
 	// endregion

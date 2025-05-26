@@ -1,13 +1,15 @@
 package models
 
-import "shop/pkg/global"
+import (
+	"shop/pkg/global"
+)
 
 type SysDept struct {
 	Name     string    `json:"name" valid:"Required;"`
 	Pid      int64     `json:"pid"`
-	Enabled  int8      `json:"enabled" `
-	Children []SysDept `gorm:"-" json:"children"`
-	Label    string    `gorm:"-" json:"label"`
+	Enabled  int8      `json:"enabled,omitempty"`
+	Children []SysDept `gorm:"-" json:"children,omitempty"`
+	Label    string    `gorm:"-" json:"label,omitempty"`
 	BaseModel
 }
 

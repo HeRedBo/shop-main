@@ -73,9 +73,7 @@ func buildTree(menus []models.SysMenu) []models.SysMenu {
 		}
 		trees[k].Children = child
 	}
-
 	return trees
-
 }
 
 func buildMenus(menus []models.SysMenu) []mVO.MenuVo {

@@ -3,9 +3,14 @@ package product_service
 import (
 	"encoding/json"
 	"errors"
+	"github.com/HeRedBo/pkg/httpclient"
+	"github.com/HeRedBo/pkg/sign"
+	"github.com/HeRedBo/pkg/strutil"
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
 	"github.com/unknwon/com"
+	"net/http"
+	"net/url"
 	"shop/internal/models"
 	"shop/internal/models/vo"
 	"shop/internal/service/cate_service"
@@ -13,6 +18,7 @@ import (
 	"shop/internal/service/product_rule_service"
 	productDto "shop/internal/service/product_service/dto"
 	proVo "shop/internal/service/product_service/vo"
+	"shop/pkg/constant"
 	productEnum "shop/pkg/enums/product"
 	"shop/pkg/global"
 	"shop/pkg/logging"
@@ -20,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Product struct {
@@ -154,6 +161,71 @@ func (d *Product) GetProductByIDs() []proVo.Product {
 	return productListVo
 }
 
+func (d *Product) SearchGoods() ([]proVo.Product, int, int) {
+	var productSearchList []proVo.Product
+	//请求搜索接口
+	params := url.Values{}
+	params.Add("userid", strutil.Int64ToString(d.Uid))
+	params.Add("keyword", d.Name)
+	params.Add("page_num", strconv.Itoa(d.PageNum))
+	params.Add("page_size", strconv.Itoa(d.PageSize))
+	if len(d.News) > 0 {
+		params.Add("news", d.News)
+	}
+	if len(d.PriceOrder) > 0 {
+		params.Add("price_order", d.PriceOrder)
+	}
+	if len(d.SalesOrder) > 0 {
+		params.Add("sales_order", d.SalesOrder)
+	}
+	global.LOG.Infof("SearchGoods params: %+v", d)
+	apiCfg := global.CONFIG.Api
+	productSearchHost := "http://localhost:9090"
+	productSearchUri := "/api/v1/product-search"
+	authorization, date, err := sign.New(apiCfg.SearchProductAK, apiCfg.SearchProductSK, constant.AuthorizationExpire).Generate(
+		productSearchUri, http.MethodGet, params)
+	if err != nil {
+		global.LOG.Error(err, params)
+		return nil, 0, 0
+	}
+	headerAuth := httpclient.WithHeader(constant.HeaderAuthField, authorization)
+	headerAuthDate := httpclient.WithHeader(constant.HeaderAuthDateField, date)
+	httpCode, body, err := httpclient.Get(productSearchHost+productSearchUri, params, httpclient.WithTTL(time.Second*5),
+		headerAuth, headerAuthDate)
+	if err != nil || httpCode != http.StatusOK {
+		global.LOG.Error(" httpclient.Get error", err, httpCode, string(body))
+		return nil, 0, 0
+	}
+
+	searchRes := &searchResponse{}
+	err = json.Unmarshal(body, searchRes)
+	if err != nil {
+		global.LOG.Error("Unmarshal searchResponse error", err, string(body))
+		return nil, 0, 0
+	}
+	if searchRes == nil {
+		return productSearchList, 0, 0
+	}
+	if !searchRes.Success {
+		global.LOG.Error("searchRes failed", string(body), searchRes)
+		return nil, 0, 0
+	}
+	totalNum := int(searchRes.Data.Total)
+	totalPage := util.GetTotalPage(totalNum, d.PageSize)
+	productIDs := make([]int64, 0)
+	for _, hit := range searchRes.Data.Hits {
+		productIDs = append(productIDs, hit.Id)
+	}
+	global.LOG.Warnf("productIDs %v", productIDs)
+	if len(productIDs) == 0 {
+		return productSearchList, totalNum, totalPage
+	}
+	d.Ids = productIDs
+
+	productSearchList = d.GetProductByIDs()
+	global.LOG.Warnf("productSearchList", productSearchList)
+	return productSearchList, totalNum, totalPage
+}
 func (d *Product) GetDetail() (*proVo.ProductDetail, error) {
 	var (
 		storeProduct models.StoreProduct
