@@ -730,6 +730,38 @@ func (o *Order) GetAll() vo.ResultList {
 	return vo.ResultList{Content: newList, TotalElements: total}
 }
 
+func (o *Order) GetUseCursor(nextID int64) vo.CursorResultList {
+	list := models.GetOrderUseCursor(o.Uid, nextID, o.PageSize)
+	var (
+		orderInfoList []models.StoreOrderCartInfo
+		cart          cartVo.Cart
+		newList       []models.StoreOrder
+	)
+	var newNextID int64
+	if len(list) == o.PageSize {
+		newNextID = list[o.PageSize-1].Id
+	}
+
+	for _, order := range list {
+		global.Db.Model(&models.StoreOrderCartInfo{}).Where("oid = ?", order.Id).Find(&orderInfoList)
+		cartInfo := make([]cartVo.Cart, 0)
+		for _, orderInfo := range orderInfoList {
+			json.Unmarshal([]byte(orderInfo.CartInfo), &cart)
+			cartInfo = append(cartInfo, cart)
+		}
+		order.CartInfo = cartInfo
+
+		_status := orderStatus(order.Paid, order.Status, order.RefundStatus)
+		order.OrderStatus = _status
+		order.OrderStatusName = orderStatusStr(order.Paid, order.Status, order.ShippingType, order.RefundStatus)
+		order.PayTypeName = payTypeName(order.PayType, order.Paid)
+		//global.LOG.Info(order.CartInfo)
+
+		newList = append(newList, order)
+	}
+	return vo.CursorResultList{Content: newList, NextID: newNextID}
+}
+
 func orderStatus(paid, status, refundStatus int) int {
 	//todo  1-未付款 2-未发货 3-退款中 4-待收货 5-待评价 6-已完成 7-已退款
 	_status := 0
