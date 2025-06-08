@@ -375,3 +375,28 @@ func (e *OrderController) CancelOrder(c *gin.Context) {
 	appG.Response(http.StatusOK, constant.SUCCESS, "success")
 
 }
+
+func (e *OrderController) OrderSearch(c *gin.Context) {
+	var (
+		appG = app.Gin{C: c}
+	)
+
+	uid, _ := jwt.GetAppUserId(c)
+	//user,_:= jwt.GetAppDetailUser(c)
+	keyword := c.Param("keyword")
+	orderService := order_service.Order{
+		Uid:      uid,
+		Keyword:  keyword,
+		PageSize: util.GetSize(c),
+		PageNum:  util.GetPage(c),
+		IntType:  com.StrTo(c.Query("order_status")).MustInt(),
+	}
+
+	orders, totalNum, totalPage := orderService.SearchOrder()
+	if orders == nil {
+		global.LOG.Error("orders nil ")
+		appG.ResponsePage(http.StatusInternalServerError, constant.ERROR, nil, 0, 0)
+		return
+	}
+	appG.ResponsePage(http.StatusOK, constant.SUCCESS, orders, totalNum, totalPage)
+}

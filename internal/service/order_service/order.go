@@ -3,8 +3,12 @@ package order_service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/HeRedBo/pkg/cache"
+	"github.com/HeRedBo/pkg/httpclient"
 	"github.com/HeRedBo/pkg/mq"
+	"github.com/HeRedBo/pkg/sign"
+	"github.com/HeRedBo/pkg/strutil"
 	"github.com/IBM/sarama"
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
@@ -12,6 +16,8 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/unknwon/com"
 	"gorm.io/gorm"
+	"net/http"
+	"net/url"
 	"shop/internal/models"
 	"shop/internal/models/vo"
 	"shop/internal/params"
@@ -59,6 +65,23 @@ type Order struct {
 	IntType      int
 
 	ReplyParam []params.ProductReplyParam
+}
+
+// 搜索结果响应结构
+type searchResponse struct {
+	Success bool                `json:"success"`
+	Code    int                 `json:"code"`
+	Msg     string              `json:"msg"`
+	Data    orderSearchResponse `json:"data"`
+}
+type orderSearchResponse struct {
+	Total int64          `json:"total"`
+	Hits  []*orderResult `json:"hits"`
+}
+
+type orderResult struct {
+	ordervo.StoreOrder
+	Highlight map[string][]string `json:"highlight"`
 }
 
 func (o *Order) GetList() ([]ordervo.StoreOrder, int, int) {
@@ -427,6 +450,32 @@ func (o *Order) CreateOrder() (*models.StoreOrder, error) {
 	}
 	//todo 订单自动取消处理
 	return storeOrder, nil
+}
+
+func (o *Order) GetOrdersInfo() ([]ordervo.StoreOrder, error) {
+	var (
+		orders []*models.StoreOrder
+		vos    []ordervo.StoreOrder
+	)
+
+	maps := make(map[string]interface{})
+	maps["order_id"] = o.OrderIds
+	if o.Uid > 0 {
+		maps["uid"] = o.Uid
+	}
+	err := global.Db.Model(&models.StoreOrder{}).
+		Where(maps).Find(&orders).Error
+	if err != nil {
+		global.LOG.Error(err)
+		return nil, err
+	}
+	for _, order := range orders {
+		vo := ordervo.StoreOrder{}
+		copier.Copy(&vo, order)
+		vos = append(vos, vo)
+	}
+
+	return vos, nil
 }
 
 // HandleOrder 处理订单状态
@@ -863,4 +912,140 @@ func (o *Order) OrderEvent(operation string) {
 	if err != nil {
 		global.LOG.Error("KafkaSyncProducer error", err, "partion : ", partion, "offset : ", offset)
 	}
+}
+
+func (o *Order) SearchOrder() ([]*orderResult, int, int) {
+	var orders []*orderResult
+	//请求搜索接口
+	params := url.Values{}
+	params.Add("userid", strutil.Int64ToString(o.Uid))
+	params.Add("keyword", o.Keyword)
+	params.Add("page_num", strconv.Itoa(o.PageNum))
+	params.Add("page_size", strconv.Itoa(o.PageSize))
+
+	global.LOG.Infof("SearchGoods params: %+v", o)
+
+	apiCfg := global.CONFIG.Api
+	searchHost := "http://localhost:9090"
+	searchUri := "/api/v1/order-search"
+	authorization, date, err := sign.New(apiCfg.SearchProductAK, apiCfg.SearchProductSK,
+		constant.AuthorizationExpire).Generate(searchUri, http.MethodGet, params)
+	if err != nil {
+		global.LOG.Error(err, params)
+		return nil, 0, 0
+	}
+	headerAuth := httpclient.WithHeader(constant.HeaderAuthField, authorization)
+	headerAuthDate := httpclient.WithHeader(constant.HeaderAuthDateField, date)
+	httpCode, body, err := httpclient.Get(searchHost+searchUri, params, httpclient.WithTTL(time.Second*5),
+		headerAuth, headerAuthDate)
+	if err != nil || httpCode != http.StatusOK {
+		global.LOG.Error(" httpclient.Get error", err, httpCode, string(body))
+		return nil, 0, 0
+	}
+	searchRes := &searchResponse{}
+	err = json.Unmarshal(body, searchRes)
+	if err != nil {
+		global.LOG.Error("Unmarshal searchResponse error", err, string(body))
+		return nil, 0, 0
+	}
+	if searchRes == nil {
+		return nil, 0, 0
+	}
+	if !searchRes.Success {
+		global.LOG.Error("searchRes failed", string(body), searchRes)
+		return nil, 0, 0
+	}
+
+	totalNum := int(searchRes.Data.Total)
+	totalPage := util.GetTotalPage(totalNum, o.PageSize)
+
+	if len(searchRes.Data.Hits) == 0 {
+		return make([]*orderResult, 0), totalNum, totalPage
+	}
+
+	var orderIDs []string
+	for _, hit := range searchRes.Data.Hits {
+		orderRes := orderResult{
+			StoreOrder: ordervo.StoreOrder{OrderId: hit.OrderId},
+			Highlight:  hit.Highlight,
+		}
+		orders = append(orders, &orderRes)
+		orderIDs = append(orderIDs, hit.OrderId)
+	}
+	global.LOG.Warnf("orders %+v", orders)
+	if len(orders) == 0 {
+		return orders, totalNum, totalPage
+	}
+	o.OrderIds = orderIDs
+	vos, err := o.GetOrdersInfo()
+	if err != nil {
+		global.LOG.Error("GetOrdersInfo error", err, orderIDs)
+		return nil, 0, 0
+	}
+	orderM := make(map[string]*ordervo.StoreOrder, 0)
+	for _, vo := range vos {
+		//填补购物车信息
+		orderM[vo.OrderId] = HandleOrder(&vo, false)
+	}
+	var newOrders []*orderResult
+	for _, r := range orders {
+		orderRes := orderResult{
+			StoreOrder: *orderM[r.OrderId],
+			Highlight:  r.Highlight,
+		}
+		if r.Highlight != nil {
+			cartInfoM := make(map[string]int64, 0) //商品名为键，商品id为值
+			cartInfoH := make(map[int64]string, 0) //商品id为键，带高亮的商品名为值
+			for _, cart := range orderRes.CartInfo {
+				cartInfoM[cart.ProductInfo.StoreName] = cart.ProductInfo.Id
+			}
+
+			if highlights, ok := r.Highlight["names"]; ok {
+				nameRmLeft := strings.Replace(highlights[0], "<em>", "", -1)
+				name := strings.Replace(nameRmLeft, "</em>", "", -1)
+				if id, ok := cartInfoM[name]; ok {
+					cartInfoH[id] = highlights[0]
+				}
+			}
+			if highlights, ok := r.Highlight["names.pinyin"]; ok {
+				nameRmLeft := strings.Replace(highlights[0], "<em>", "", -1)
+				name := strings.Replace(nameRmLeft, "</em>", "", -1)
+				if id, ok := cartInfoM[name]; ok {
+					//name字段没高亮才高亮拼音字段
+					if _, ok := cartInfoH[id]; !ok {
+						cartInfoH[id] = highlights[0]
+					}
+				}
+			}
+
+			if len(cartInfoH) > 0 {
+				fmt.Printf("cartInfoH %+v", cartInfoH)
+				//用高亮后的商品名替换原商品名（也可以在前端处理）
+				for i, cart := range orderRes.CartInfo {
+					if name, ok := cartInfoH[cart.ProductInfo.Id]; ok {
+						orderRes.CartInfo[i].ProductInfo.StoreName = name
+					}
+				}
+			}
+
+			if highlights, ok := r.Highlight["order_id"]; ok {
+				orderRes.DisplayOrderId = highlights[0]
+			}
+			if highlights, ok := r.Highlight["order_id_suffix"]; ok {
+				//order_id没高亮才展示order_id_suffix的高亮
+				if len(orderRes.DisplayOrderId) == 0 {
+					orderRes.DisplayOrderId = orderRes.OrderId[:len(orderRes.OrderId)-4] + highlights[0]
+				}
+
+			}
+			//没有匹配order_id展示原始order_id
+			if len(orderRes.DisplayOrderId) == 0 {
+				orderRes.DisplayOrderId = orderRes.OrderId
+			}
+		}
+		global.LOG.Warnf("orderRes %+v", orderRes)
+		newOrders = append(newOrders, &orderRes)
+	}
+
+	return newOrders, totalNum, totalPage
 }
