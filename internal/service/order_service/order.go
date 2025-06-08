@@ -741,6 +741,7 @@ func (o *Order) GetUseCursor(nextID int64) vo.CursorResultList {
 	if len(list) == o.PageSize {
 		newNextID = list[o.PageSize-1].Id
 	}
+
 	for _, order := range list {
 		global.Db.Model(&models.StoreOrderCartInfo{}).Where("oid = ?", order.Id).Find(&orderInfoList)
 		cartInfo := make([]cartVo.Cart, 0)
@@ -758,7 +759,6 @@ func (o *Order) GetUseCursor(nextID int64) vo.CursorResultList {
 
 		newList = append(newList, order)
 	}
-
 	return vo.CursorResultList{Content: newList, NextID: newNextID}
 }
 

@@ -13,7 +13,7 @@ import (
 // OrderController order api for developer
 type OrderController struct{}
 
-// @Title 用户全部订单
+// GetUserOrders @Title 用户全部订单
 // @Description 分批获取用户全部订单
 // @Success 200 {object} app.Response
 // @router / [get]
@@ -27,8 +27,7 @@ func (e *OrderController) GetUserOrders(c *gin.Context) {
 		appG.Response(http.StatusBadRequest, constant.INVALID_PARAMS, nil)
 		return
 	}
-	//用户存在性校验？
-
+	//TODO 用户存在性校验？
 	orderService := order_service.Order{
 		PageSize: util.GetSize(c),
 		Uid:      userID,
