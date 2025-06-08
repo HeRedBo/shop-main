@@ -3,6 +3,7 @@ package routers
 import (
 	"net/http"
 	"shop/internal/controllers/admin"
+	"shop/internal/controllers/dev"
 	"shop/internal/controllers/front"
 	"shop/middleware"
 	"shop/pkg/upload"
@@ -232,7 +233,6 @@ func InitRouter() *gin.Engine {
 		authApiV1.POST("/cart/num", ApiCartController.CartNum)
 		authApiV1.POST("/cart/del", ApiCartController.DelCart)
 		// endregion
-
 		// region 订单模块
 		authApiV1.POST("/order/confirm", ApiOrderController.Confirm)
 		authApiV1.POST("/order/computed/:key", ApiOrderController.Compute)
@@ -247,5 +247,11 @@ func InitRouter() *gin.Engine {
 		// endregion
 	}
 	// endregion
+	devOrderController := dev.OrderController{}
+	//开发者api
+	devApiv1 := r.Group("/dev/v1").Use(middleware.Auth())
+	{
+		devApiv1.GET("/orders/user/:uid", devOrderController.GetUserOrders)
+	}
 	return r
 }
