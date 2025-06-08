@@ -35,6 +35,10 @@ type ShopUser struct {
 	BaseModel
 }
 
+func (ShopUser) TableName() string {
+	return "user"
+}
+
 func GetAllWechatUser(pageNUm int, pageSize int, maps interface{}) (int64, []ShopUser) {
 	var (
 		total int64

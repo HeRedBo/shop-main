@@ -3,6 +3,7 @@ server:
   http-port: 8000
   read-timeout: 60
   write-timeout: 60
+
 app:
   domain: localhost
   page-size: 10
@@ -28,14 +29,14 @@ api:
 database:
   type: 'mysql'
   user: 'root'
-  password: 'root'
+  password: 'admin123'
   host: '127.0.0.1:3306'
   name: 'shop'
   table_prefix:
 
 redis:
   host: '127.0.0.1:6379'
-  password:
+  password: 123456
   idle_timeout: 200
 
 kafka:
