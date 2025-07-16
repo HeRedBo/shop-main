@@ -61,5 +61,5 @@ func (d *Rule) Save() error {
 }
 
 func (d *Rule) Del() error {
-	return models.DelByProductRulee(d.Ids)
+	return models.DelByProductRule(d.Ids)
 }

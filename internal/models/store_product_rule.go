@@ -61,7 +61,7 @@ func UpdateByProductRule(id int64, m *StoreProductRule) error {
 	return err
 }
 
-func DelByProductRulee(ids []int64) error {
+func DelByProductRule(ids []int64) error {
 	var err error
 	err = global.Db.Model(&StoreProductRule{}).Where("id in (?)", ids).Update("is_del", 1).Error
 	if err != nil {
