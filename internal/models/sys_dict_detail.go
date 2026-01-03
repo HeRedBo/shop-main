@@ -2,16 +2,6 @@ package models
 
 import "shop/pkg/global"
 
-func DelByDict(ids []int64) error {
-	var err error
-	err = global.Db.Where("id in (?)", ids).Delete(&SysDict{}).Error
-	if err != nil {
-		return err
-	}
-
-	return err
-}
-
 type SysDictDetail struct {
 	Label    string `json:"label" valid:"Required;"`
 	Value    string `json:"value" valid:"Required;"`

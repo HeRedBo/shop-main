@@ -3,12 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/HeRedBo/pkg/cache"
-	"github.com/HeRedBo/pkg/db"
-	"github.com/HeRedBo/pkg/mq"
-	"github.com/HeRedBo/pkg/shutdown"
-	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v7"
 	"net/http"
 	"shop/pkg/base"
 	"shop/pkg/casbin"
@@ -17,13 +11,19 @@ import (
 	"shop/pkg/logging"
 	"shop/routers"
 	"time"
+
+	"github.com/HeRedBo/pkg/cache"
+	"github.com/HeRedBo/pkg/db"
+	"github.com/HeRedBo/pkg/mq"
+	"github.com/HeRedBo/pkg/shutdown"
+	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v7"
 )
 
 func init() {
 	global.LoadConfig()
 	global.LOG = base.SetupLogger()
 	logging.Init()
-
 	//初始化redis
 	err := cache.InitRedis(cache.DefaultRedisClient, &redis.Options{
 		Addr:        global.CONFIG.Redis.Host,

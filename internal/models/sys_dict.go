@@ -13,14 +13,14 @@ func (SysDict) TableName() string {
 }
 
 // GetAllDict get all
-func GetAllDict(pageNUm int, pageSize int, maps interface{}) (int64, []SysDict) {
+func GetAllDict(pageNum int, pageSize int, maps interface{}) (int64, []SysDict) {
 	var (
 		total int64
 		dicts []SysDict
 	)
 
 	global.Db.Model(&SysDict{}).Where(maps).Count(&total)
-	global.Db.Where(maps).Offset(pageNUm).Limit(pageSize).Preload("Dept").Find(&dicts)
+	global.Db.Where(maps).Offset(pageNum).Limit(pageSize).Preload("Dept").Find(&dicts)
 
 	return total, dicts
 }
@@ -38,6 +38,16 @@ func AddDict(m *SysDict) error {
 func UpdateByDict(m *SysDict) error {
 	var err error
 	err = global.Db.Save(m).Error
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+func DelByDict(ids []int64) error {
+	var err error
+	err = global.Db.Where("id in (?)", ids).Delete(&SysDict{}).Error
 	if err != nil {
 		return err
 	}

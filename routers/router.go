@@ -184,6 +184,7 @@ func InitRouter() *gin.Engine {
 	ApiIndexController := new(front.IndexController)
 	ApiCategoryController := new(front.CategoryController)
 	ApiProductController := new(front.ProductController)
+	ApiAddressController := new(front.UserAddressController)
 	ApiOrderController := new(front.OrderController)
 	apiV1 := r.Group("/api/v1")
 	{
@@ -208,6 +209,7 @@ func InitRouter() *gin.Engine {
 		apiV1.GET("/product/hot", ApiProductController.GoodsRecommendList)
 		apiV1.GET("/reply/list/:id", ApiProductController.ReplyList)
 		// endregion
+		apiV1.GET("/city_list", ApiAddressController.GetCityList)
 		apiV1.Any("/order/notify", ApiOrderController.NotifyPay)
 	}
 	// endregion
@@ -244,6 +246,12 @@ func InitRouter() *gin.Engine {
 		authApiV1.POST("/order/take", ApiOrderController.TakeOrder)
 		authApiV1.POST("/order/comments/:key", ApiOrderController.OrderComment)
 		authApiV1.POST("/order/cancel", ApiOrderController.CancelOrder)
+		// endregion
+		// region 地址模块
+		authApiV1.POST("/address/edit", ApiAddressController.SaveAddress)
+		authApiV1.GET("/address", ApiAddressController.GetList)
+		authApiV1.POST("/address/default/set", ApiAddressController.SetDefault)
+		authApiV1.POST("/address/del", ApiAddressController.Del)
 		// endregion
 	}
 	// endregion

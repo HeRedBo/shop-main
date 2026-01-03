@@ -23,14 +23,14 @@ func (UserAddress) TableName() string {
 }
 
 // get all
-func GetAllUserAddress(pageNUm int, pageSize int, maps interface{}) (int64, []UserAddress) {
+func GetAllUserAddress(pageNum int, pageSize int, maps interface{}) (int64, []UserAddress) {
 	var (
 		total int64
 		data  []UserAddress
 	)
 
 	global.Db.Model(&UserAddress{}).Where(maps).Count(&total)
-	global.Db.Where(maps).Offset(pageNUm).Limit(pageSize).Order("id desc").Find(&data)
+	global.Db.Where(maps).Offset(pageNum).Limit(pageSize).Order("id desc").Find(&data)
 
 	return total, data
 }

@@ -737,7 +737,6 @@ func attrFormat(formatDetailList []productDto.FormatDetail) productDto.Detail {
 					formatDetail.Value: str,
 				}
 				map2["detail"] = map1
-
 				res = append(res, map2)
 			}
 		}
