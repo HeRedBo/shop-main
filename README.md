@@ -259,30 +259,30 @@ shop-main/
 <table>
 <tr><th colspan="3" align="center">后端</th></tr>
 <tr><th>分类</th><th>技术</th><th>用途</th></tr>
-<tr><td>语言</td><td><img src="https://img.shields.io/badge/Go-1.23-00ADD8?style=flat-square&logo=go"/> </td><td>开发语言</td></tr>
-<tr><td>Web 框架</td><td>Gin</td><td>HTTP 路由与中间件</td></tr>
-<tr><td>ORM</td><td>Gorm</td><td>数据库操作、关联预加载、软删除</td></tr>
-<tr><td>权限</td><td>Casbin v2 + Gorm Adapter</td><td>RBAC 角色菜单权限、策略持久化</td></tr>
-<tr><td>认证</td><td>JWT (dgrijalva/jwt-go)</td><td>管理端 & 用户端双 Token 鉴权</td></tr>
-<tr><td>缓存</td><td>Redis (go-redis/v7)</td><td>Token 存储、数据缓存</td></tr>
-<tr><td>数据库</td><td>MySQL</td><td>业务数据持久化</td></tr>
-<tr><td>消息队列</td><td>Kafka (IBM/sarama)</td><td>商品/订单变更事件异步推送</td></tr>
-<tr><td>日志</td><td>Zap + Lumberjack</td><td>结构化日志、文件轮转</td></tr>
-<tr><td>配置</td><td>Viper</td><td>YAML 配置热加载</td></tr>
-<tr><td>支付</td><td>Gopay</td><td>微信支付 JSAPI / Native</td></tr>
-<tr><td>微信</td><td>SilenceWechat v2</td><td>公众号菜单、消息、用户管理</td></tr>
-<tr><td>工具</td><td>Copier / KSUID / Decimal</td><td>结构体拷贝 / 分布式 ID / 精确小数</td></tr>
-<tr><td>优雅关闭</td><td>shutdownHook</td><td>信号监听、资源安全释放</td></tr>
+<tr><td>语言</td><td><img src="https://img.shields.io/badge/Go-1.23-00ADD8?style=flat-square&logo=go&logoColor=white"/></td><td>开发语言</td></tr>
+<tr><td>Web 框架</td><td><img src="https://img.shields.io/badge/Gin-1.10-00ACD7?style=flat-square&logo=go&logoColor=white"/></td><td>HTTP 路由与中间件</td></tr>
+<tr><td>ORM</td><td><img src="https://img.shields.io/badge/Gorm-1.25-5D5DE0?style=flat-square&logo=go&logoColor=white"/></td><td>数据库操作、关联预加载、软删除</td></tr>
+<tr><td>权限</td><td><img src="https://img.shields.io/badge/Casbin-v2-FF6C37?style=flat-square&logo=go&logoColor=white"/></td><td>RBAC 角色菜单权限、策略持久化</td></tr>
+<tr><td>认证</td><td><img src="https://img.shields.io/badge/JWT-dgrijalva-000000?style=flat-square&logo=jsonwebtokens&logoColor=white"/></td><td>管理端 & 用户端双 Token 鉴权</td></tr>
+<tr><td>缓存</td><td><img src="https://img.shields.io/badge/Redis-go--redis%2Fv7-DC382D?style=flat-square&logo=redis&logoColor=white"/></td><td>Token 存储、数据缓存</td></tr>
+<tr><td>数据库</td><td><img src="https://img.shields.io/badge/MySQL-5.7+-4479A1?style=flat-square&logo=mysql&logoColor=white"/></td><td>业务数据持久化</td></tr>
+<tr><td>消息队列</td><td><img src="https://img.shields.io/badge/Kafka-IBM%2FSarama-231F20?style=flat-square&logo=apache-kafka&logoColor=white"/></td><td>商品/订单变更事件异步推送</td></tr>
+<tr><td>日志</td><td><img src="https://img.shields.io/badge/Zap-Lumberjack-FF6C37?style=flat-square&logo=uber&logoColor=white"/></td><td>结构化日志、文件轮转</td></tr>
+<tr><td>配置</td><td><img src="https://img.shields.io/badge/Viper-Config-6C4AB6?style=flat-square&logo=go&logoColor=white"/></td><td>YAML 配置热加载</td></tr>
+<tr><td>支付</td><td><img src="https://img.shields.io/badge/Gopay-WeChat-07C160?style=flat-square&logo=wechat&logoColor=white"/></td><td>微信支付 JSAPI / Native</td></tr>
+<tr><td>微信</td><td><img src="https://img.shields.io/badge/SilenceWechat-v2-07C160?style=flat-square&logo=wechat&logoColor=white"/></td><td>公众号菜单、消息、用户管理</td></tr>
+<tr><td>工具</td><td><img src="https://img.shields.io/badge/Copier%2FKSUID%2FDecimal-Tools-555555?style=flat-square&logo=go&logoColor=white"/></td><td>结构体拷贝 / 分布式 ID / 精确小数</td></tr>
+<tr><td>优雅关闭</td><td><img src="https://img.shields.io/badge/shutdownHook-Signal-555555?style=flat-square&logo=go&logoColor=white"/></td><td>信号监听、资源安全释放</td></tr>
 </table>
 
 <table>
 <tr><th colspan="2" align="center">前端</th></tr>
 <tr><th>技术</th><th>说明</th></tr>
-<tr><td>Vue 2</td><td>前端框架</td></tr>
-<tr><td>Element UI</td><td>UI 组件库</td></tr>
-<tr><td>Vuex</td><td>状态管理</td></tr>
-<tr><td>Vue Router</td><td>路由管理</td></tr>
-<tr><td>Axios</td><td>HTTP 请求</td></tr>
+<tr><td><img src="https://img.shields.io/badge/Vue-2.x-4FC08D?style=flat-square&logo=vue.js&logoColor=white"/></td><td>前端框架</td></tr>
+<tr><td><img src="https://img.shields.io/badge/Element--UI-2.x-409EFF?style=flat-square&logo=element&logoColor=white"/></td><td>UI 组件库</td></tr>
+<tr><td><img src="https://img.shields.io/badge/Vuex-3.x-4FC08D?style=flat-square&logo=vue.js&logoColor=white"/></td><td>状态管理</td></tr>
+<tr><td><img src="https://img.shields.io/badge/Vue--Router-3.x-4FC08D?style=flat-square&logo=vue.js&logoColor=white"/></td><td>路由管理</td></tr>
+<tr><td><img src="https://img.shields.io/badge/Axios-HTTP-5A29E4?style=flat-square&logo=axios&logoColor=white"/></td><td>HTTP 请求</td></tr>
 </table>
 
 ---
@@ -375,12 +375,29 @@ graph LR
 
 ### 环境要求
 
-| 依赖 | 版本 |
-| :--- | :--- |
-| Go | >= 1.23 |
-| MySQL | >= 5.7 |
-| Redis | >= 4.0 |
-| Kafka | 2.x+ |
+<table>
+<thead>
+<tr><th>依赖</th><th>版本</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white"/></td>
+<td>>= 1.23</td><td>开发语言</td>
+</tr>
+<tr>
+<td><img src="https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white"/></td>
+<td>>= 5.7</td><td>关系型数据库，必须</td>
+</tr>
+<tr>
+<td><img src="https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white"/></td>
+<td>>= 4.0</td><td>缓存，必须</td>
+</tr>
+<tr>
+<td><img src="https://img.shields.io/badge/Kafka-231F20?style=flat-square&logo=apache-kafka&logoColor=white"/></td>
+<td>2.x+</td><td>消息队列，必须</td>
+</tr>
+</tbody>
+</table>
 
 ### 部署步骤
 
