@@ -1,0 +1,6 @@
+
+# GitHub Linguist 语言统计配置
+
+# 将 sql 目录标记为 vendored，完全排除在语言统计之外
+sql/*  linguist-vendored=true
+*.sql  linguist-vendored=true
