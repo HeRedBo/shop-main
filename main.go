@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"shop/internal/observers"
 	"shop/pkg/base"
 	"shop/pkg/casbin"
 	"shop/pkg/global"
@@ -44,6 +45,8 @@ func init() {
 	}
 	global.Db = db.GetMysqlClient(db.DefaultClient).DB
 	casbin.InitCasbin(global.Db)
+	// 初始化模型观察者
+	observers.RegisterAll(global.Db)
 	jwt.Init()
 
 	err = mq.InitSyncKafkaProducer(mq.DefaultKafkaSyncProducer, global.CONFIG.Kafka.Hosts, nil)
