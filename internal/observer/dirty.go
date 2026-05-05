@@ -329,3 +329,23 @@ func (b *BatchContext) VarsCount() int {
 	}
 	return len(b.Vars)
 }
+
+// GetVarAs 泛型方法 — 从 BatchContext 的 Vars 中按索引获取绑定值并转为指定类型
+// 类型断言精确匹配，适用于你明确知道传入类型的场景
+//
+// 示例:
+//
+//	batch := observer.GetBatchContext(tx)
+//	deptId, ok := observer.GetVarAs[int64](batch, 0)
+//	name, ok := observer.GetVarAs[string](batch, 1)
+//	ids, ok := observer.GetVarAs[[]int64](batch, 2)
+func GetVarAs[T any](batch *BatchContext, index int) (T, bool) {
+	var zero T
+	if batch == nil || index >= len(batch.Vars) {
+		return zero, false
+	}
+	if val, ok := batch.Vars[index].(T); ok {
+		return val, true
+	}
+	return zero, false
+}

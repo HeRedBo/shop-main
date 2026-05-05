@@ -21,6 +21,7 @@
 | | `GetVar(index)` | 按索引获取 WHERE 绑定值 |
 | | `GetVarInt64(index)` | 获取绑定值并转为 int64 |
 | | `GetVarString(index)` | 获取绑定值并转为 string |
+| | `GetVarAs[T](batch, index)` | 泛型获取绑定值（精确类型断言） |
 | | `GetVarsAsInt64Slice(batch, index)` | 提取 ID 列表等切片 |
 | | `VarsCount()` | 绑定变量数量 |
 | **批量操作反查** | `batch.ReQuery(&dest)` | 用原始 WHERE + Vars 反查受影响的记录 |
@@ -256,6 +257,7 @@ batch := observer.GetBatchContext(tx)
 | `GetVarInt64` | `GetVarInt64(index int) (int64, bool)` | 获取绑定值并转为 int64 |
 | `GetVarString` | `GetVarString(index int) (string, bool)` | 获取绑定值并转为 string |
 | `VarsCount` | `VarsCount() int` | 绑定变量数量 |
+| `GetVarAs` | `GetVarAs[T](batch *BatchContext, index int) (T, bool)` | 泛型获取绑定值（包级函数） |
 | `GetVarsAsInt64Slice` | `GetVarsAsInt64Slice(batch *BatchContext, index int) []int64` | 提取 ID 列表（包级函数） |
 | `ReQuery` | `ReQuery(dest interface{}) *gorm.DB` | 用原始 WHERE + Vars 反查受影响的记录 |
 | `ReQueryWithScope` | `ReQueryWithScope(dest interface{}, scope func(*gorm.DB) *gorm.DB) *gorm.DB` | 反查 + 额外条件 |
@@ -299,6 +301,30 @@ batch := observer.GetBatchContext(tx)
 ids := observer.GetVarsAsInt64Slice(batch, 0) // 获取 ID 列表
 log.Printf("批量更新 %d 条记录, IDs: %v", batch.RowsAffected, ids)
 ```
+
+### 泛型获取绑定值 — `GetVarAs[T]`
+
+当你明确知道 WHERE 绑定值的类型时，可以使用泛型方法直接获取，代码更简洁：
+
+```go
+batch := observer.GetBatchContext(tx)
+
+// 直接指定期望的类型
+deptId, ok := observer.GetVarAs[int64](batch, 0)
+name, ok := observer.GetVarAs[string](batch, 1)
+ids, ok := observer.GetVarAs[[]int64](batch, 2)
+```
+
+**注意：** `GetVarAs` 使用精确类型断言，`int` 和 `int64` 不互通。如果你不确定 GORM 传入的具体类型，建议使用 `GetVarInt64` / `GetVarString`（它们内部做了多类型兼容转换）。
+
+**选择建议：**
+| 场景 | 推荐方法 |
+|------|---------|
+| 明确知道类型（如自己传入的 int64 变量） | `GetVarAs[int64](batch, i)` |
+| 不确定是 int 还是 int64（如字面量 5） | `batch.GetVarInt64(i)` |
+| 获取字符串 | `GetVarAs[string](batch, i)` 或 `batch.GetVarString(i)` |
+| 获取切片（如 []int64） | `GetVarAs[[]int64](batch, i)` 或 `GetVarsAsInt64Slice(batch, i)` |
+| 获取 time.Time 等其他类型 | `GetVarAs[time.Time](batch, i)` |
 
 ### 5.4 推荐的 Observer 编写模式
 
