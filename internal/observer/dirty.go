@@ -131,8 +131,10 @@ func GetDirtyFromTx(tx *gorm.DB) *DirtyFields {
 type BatchContext struct {
 	Table        string        // 表名
 	SQL          string        // 完整的 SQL 语句
+	WhereSQL     string        // 提取出的 WHERE 子句（不含 WHERE 关键字）
 	Vars         []interface{} // SQL 绑定变量（即 WHERE 条件中的值，如 ids 列表）
 	RowsAffected int64         // 影响行数
+	db           *gorm.DB      // 数据库连接（用于 ReQuery）
 }
 
 // GetBatchContext 从 tx 中提取批量操作的上下文信息
@@ -156,12 +158,78 @@ type BatchContext struct {
 //	    return nil
 //	}
 func GetBatchContext(tx *gorm.DB) *BatchContext {
+	fullSQL := tx.Statement.SQL.String()
 	return &BatchContext{
 		Table:        tx.Statement.Table,
-		SQL:          tx.Statement.SQL.String(),
+		SQL:          fullSQL,
+		WhereSQL:     extractWhereClause(fullSQL),
 		Vars:         tx.Statement.Vars,
 		RowsAffected: tx.RowsAffected,
+		db:           tx.Session(&gorm.Session{NewDB: true}),
 	}
+}
+
+// extractWhereClause 从完整 SQL 中提取 WHERE 子句部分
+// 输入: "UPDATE sys_user SET enabled=0 WHERE dept_id = ? AND status = ?"
+// 输出: "dept_id = ? AND status = ?"
+func extractWhereClause(sql string) string {
+	upperSQL := strings.ToUpper(sql)
+	whereIdx := strings.Index(upperSQL, " WHERE ")
+	if whereIdx == -1 {
+		return ""
+	}
+	wherePart := sql[whereIdx+7:] // 跳过 " WHERE "
+	// 去掉可能的尾部子句（ORDER BY / LIMIT / RETURNING 等）
+	for _, keyword := range []string{" ORDER BY", " LIMIT", " RETURNING", " GROUP BY", " HAVING"} {
+		if idx := strings.Index(strings.ToUpper(wherePart), keyword); idx != -1 {
+			wherePart = wherePart[:idx]
+		}
+	}
+	return strings.TrimSpace(wherePart)
+}
+
+// ReQuery 使用相同的 WHERE 条件反查受影响的记录
+// 这是批量操作场景下最实用的方法 — 直接用原始 WHERE 条件查出受影响的数据
+//
+// 示例:
+//
+//	func (o *SysUserObserver) AfterUpdate(tx *gorm.DB, model interface{}) error {
+//	    batch := observer.GetBatchContext(tx)
+//	    if batch.RowsAffected > 0 {
+//	        var users []models.SysUser
+//	        batch.ReQuery(&users)
+//	        // users 就是被批量更新的那些记录，可以遍历处理
+//	        for _, u := range users {
+//	            log.Printf("用户 %d 被批量更新", u.Id)
+//	        }
+//	    }
+//	    return nil
+//	}
+func (b *BatchContext) ReQuery(dest interface{}) *gorm.DB {
+	if b == nil || b.WhereSQL == "" || b.db == nil {
+		return nil
+	}
+	return b.db.Where(b.WhereSQL, b.Vars...).Find(dest)
+}
+
+// ReQueryWithScope 使用 WHERE 条件反查，并支持额外的查询条件
+// 比如只查部分字段、加排序、加分页等
+//
+// 示例:
+//
+//	var users []models.SysUser
+//	batch.ReQueryWithScope(&users, func(db *gorm.DB) *gorm.DB {
+//	    return db.Select("id, nick_name").Order("id desc").Limit(100)
+//	})
+func (b *BatchContext) ReQueryWithScope(dest interface{}, scope func(*gorm.DB) *gorm.DB) *gorm.DB {
+	if b == nil || b.WhereSQL == "" || b.db == nil {
+		return nil
+	}
+	query := b.db.Where(b.WhereSQL, b.Vars...)
+	if scope != nil {
+		query = scope(query)
+	}
+	return query.Find(dest)
 }
 
 // GetVarsAs 从 BatchContext 的 Vars 中提取指定索引的值并转为 int64 切片

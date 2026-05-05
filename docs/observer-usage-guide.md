@@ -17,11 +17,14 @@
 | | `Fields()` | 获取所有变更的字段名列表 |
 | | `String()` | 输出可读的变更摘要 |
 | **批量操作上下文** | `GetBatchContext(tx)` | 提取批量 Update/Delete 的上下文 |
+| | `WhereSQL` | 提取出的 WHERE 子句（不含 WHERE 关键字） |
 | | `GetVar(index)` | 按索引获取 WHERE 绑定值 |
 | | `GetVarInt64(index)` | 获取绑定值并转为 int64 |
 | | `GetVarString(index)` | 获取绑定值并转为 string |
 | | `GetVarsAsInt64Slice(batch, index)` | 提取 ID 列表等切片 |
 | | `VarsCount()` | 绑定变量数量 |
+| **批量操作反查** | `batch.ReQuery(&dest)` | 用原始 WHERE + Vars 反查受影响的记录 |
+| | `batch.ReQueryWithScope(&dest, scope)` | 反查 + 额外条件（Select/Limit/Order 等） |
 | **数据补全** | `FetchFullModel(tx, dest)` | 在 Observer 中通过主键反查完整记录 |
 
 ---
@@ -246,6 +249,7 @@ batch := observer.GetBatchContext(tx)
 |-----------|----------|------|
 | `Table` | `string` | 表名 |
 | `SQL` | `string` | 完整的 SQL 语句 |
+| `WhereSQL` | `string` | 提取出的 WHERE 子句（不含 WHERE 关键字） |
 | `Vars` | `[]interface{}` | SQL 绑定变量（WHERE 条件中的值） |
 | `RowsAffected` | `int64` | 影响行数 |
 | `GetVar` | `GetVar(index int) interface{}` | 按索引获取绑定值 |
@@ -253,6 +257,8 @@ batch := observer.GetBatchContext(tx)
 | `GetVarString` | `GetVarString(index int) (string, bool)` | 获取绑定值并转为 string |
 | `VarsCount` | `VarsCount() int` | 绑定变量数量 |
 | `GetVarsAsInt64Slice` | `GetVarsAsInt64Slice(batch *BatchContext, index int) []int64` | 提取 ID 列表（包级函数） |
+| `ReQuery` | `ReQuery(dest interface{}) *gorm.DB` | 用原始 WHERE + Vars 反查受影响的记录 |
+| `ReQueryWithScope` | `ReQueryWithScope(dest interface{}, scope func(*gorm.DB) *gorm.DB) *gorm.DB` | 反查 + 额外条件 |
 
 ### 5.3 多条件 WHERE 场景
 
@@ -352,6 +358,120 @@ func (o *MyModelObserver) AfterUpdate(tx *gorm.DB, model interface{}) error {
     return nil
 }
 ```
+
+### 5.5 批量操作反查模式（ReQuery）
+
+批量 Update/Delete 操作中，Observer 无法获取单条记录的字段变更（Dirty Tracking 不可用），但可以通过提取原始 WHERE 条件来反查受影响的记录，然后执行后续业务逻辑。
+
+#### 逻辑流程图
+
+```
+Service 层执行批量操作：
+  db.Model(&SysUser{}).Where("dept_id = ? AND status = ?", 5, 1).Updates(data)
+        ↓
+GORM 生成 SQL：
+  SQL:  "UPDATE sys_user SET ... WHERE dept_id = ? AND status = ?"
+  Vars: [5, 1]
+        ↓
+Observer 回调触发（AfterUpdate）：
+  batch := observer.GetBatchContext(tx)
+  batch.WhereSQL = "dept_id = ? AND status = ?"    ← 自动从 SQL 提取
+  batch.Vars     = [5, 1]                          ← 原始绑定变量
+        ↓
+用 WHERE 条件反查受影响的记录：
+  batch.ReQuery(&users)
+  → 内部执行: db.Where("dept_id = ? AND status = ?", 5, 1).Find(&users)
+        ↓
+遍历记录，执行业务逻辑：
+  for _, u := range users { /* 发通知、写日志、清缓存... */ }
+```
+
+#### ReQuery API 参考
+
+| 方法/字段 | 签名/类型 | 说明 |
+|-----------|----------|------|
+| `WhereSQL` | `string` | 提取出的 WHERE 子句字符串（不含 WHERE 关键字） |
+| `ReQuery` | `ReQuery(dest interface{}) *gorm.DB` | 用原始 WHERE + Vars 直接反查数据，一行搞定 |
+| `ReQueryWithScope` | `ReQueryWithScope(dest interface{}, scope func(*gorm.DB) *gorm.DB) *gorm.DB` | 反查 + 额外条件（Select/Limit/Order 等） |
+
+#### 完整使用示例
+
+**示例 1：批量更新后通知**
+
+```go
+func (o *SysUserObserver) AfterUpdate(tx *gorm.DB, model interface{}) error {
+    // 1. 先尝试单条 Dirty Tracking
+    dirty := observer.GetDirtyFromTx(tx)
+    if dirty != nil && dirty.HasChanges() {
+        // 单条更新逻辑...
+        return nil
+    }
+
+    // 2. 批量更新场景 — 用 WHERE 条件反查
+    batch := observer.GetBatchContext(tx)
+    if batch.RowsAffected > 0 {
+        var users []models.SysUser
+        batch.ReQuery(&users)
+
+        for _, u := range users {
+            log.Printf("用户 %d (%s) 被批量更新", u.Id, u.NickName)
+            // 发通知、清缓存等业务逻辑...
+        }
+    }
+    return nil
+}
+```
+
+**示例 2：批量删除前记录审计日志（BeforeDelete）**
+
+```go
+func (o *SysUserObserver) BeforeDelete(tx *gorm.DB, model interface{}) error {
+    batch := observer.GetBatchContext(tx)
+    if batch.RowsAffected == 0 && batch.WhereSQL != "" {
+        // BeforeDelete 中 RowsAffected 还是 0，但 WHERE 已经有了
+        var users []models.SysUser
+        batch.ReQuery(&users)
+
+        for _, u := range users {
+            log.Printf("[审计] 即将删除用户: id=%d, name=%s", u.Id, u.NickName)
+        }
+    }
+    return nil
+}
+```
+
+**示例 3：带额外条件的反查**
+
+```go
+batch := observer.GetBatchContext(tx)
+var users []models.SysUser
+batch.ReQueryWithScope(&users, func(db *gorm.DB) *gorm.DB {
+    return db.Select("id, nick_name, phone").Order("id desc").Limit(100)
+})
+```
+
+**示例 4：手动使用 WhereSQL**
+
+```go
+batch := observer.GetBatchContext(tx)
+// 如果你需要更灵活的控制
+fmt.Println(batch.WhereSQL) // "dept_id = ? AND status = ?"
+fmt.Println(batch.Vars)     // [5, 1]
+
+// 手动构建查询
+var count int64
+tx.Session(&gorm.Session{NewDB: true}).
+    Model(&models.SysUser{}).
+    Where(batch.WhereSQL, batch.Vars...).
+    Count(&count)
+```
+
+#### 注意事项
+
+- `ReQuery` 在 AfterUpdate 中使用时，查到的是**更新后**的数据
+- `ReQuery` 在 BeforeDelete 中使用时，查到的是**即将被删除**的数据（推荐在 Before 中记录）
+- AfterDelete 中 ReQuery 将查不到数据（已经被删了），所以删除审计应放在 BeforeDelete
+- `WhereSQL` 是从完整 SQL 中通过字符串提取的，会自动去除 ORDER BY、LIMIT 等尾部子句
 
 ---
 
