@@ -213,6 +213,20 @@ shop-main/
 │   │   ├── sys_memu.go                 #   菜单模型
 │   │   └── ...                         #   30+ 其他模型
 │   │
+│   ├── observer/                       # Observer 框架层（通用能力）
+│   │   ├── interfaces.go               #   观察者事件接口定义
+│   │   ├── registry.go                 #   注册中心
+│   │   ├── plugin.go                   #   GORM Plugin 实现
+│   │   ├── dirty.go                    #   字段变更追踪 & 批量操作上下文
+│   │   ├── dirty_tracker.go            #   Dirty Tracking 计算引擎
+│   │   └── helpers.go                  #   数据补全辅助方法
+│   │
+│   ├── observers/                      # Observer 业务层（按模型注册）
+│   │   ├── register.go                 #   统一注册入口
+│   │   ├── sys_user_observer.go
+│   │   ├── product_observer.go
+│   │   └── order_observer.go
+│   │
 │   ├── params/                         # 请求参数定义（14 个）
 │   │
 │   └── service/                        # 业务逻辑层（24+ 服务）
@@ -367,6 +381,25 @@ graph LR
 - **消息定义** — 商品/订单 Model 层定义 `ProductMsg` / `OrderMsg`，携带 `operation` 操作类型
 - **推送时机** — Service 层在业务变更后通过 Kafka SyncProducer 推送消息
 - **消费处理** — 消费者根据 `operation` 类型决定 ES 写入 / 更新 / 删除操作
+
+### 👁️ Observer 模式
+
+项目基于 GORM Callback 机制实现了类似 **Laravel Eloquent Observer** 的模型观察者模式，将业务监听逻辑从 Service 层解耦到独立的 Observer 组件中。
+
+**支持的能力概览**
+
+| 能力 | 说明 |
+| :--- | :--- |
+| **7 个模型事件监听** | `Before/After Create/Update/Delete` + `After Find`，覆盖单条与批量操作 |
+| **字段变更追踪（Dirty Tracking）** | 通过 `Schema.FieldValue` 反射比对，精确识别字段新旧值差异 |
+| **批量操作上下文提取（BatchContext + ReQuery）** | 自动解析 `WHERE` 条件、提取受影响主键集合，实现批量事件的精准回溯 |
+
+**相关文档**
+
+| 文档 | 说明 |
+| :--- | :--- |
+| [`docs/observer-usage-guide.md`](docs/observer-usage-guide.md) | 使用指南：如何编写和注册 Observer |
+| [`docs/gorm-observer-pattern.md`](docs/gorm-observer-pattern.md) | 技术报告：设计原理与实现细节 |
 
 
 
