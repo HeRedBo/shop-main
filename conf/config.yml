@@ -40,14 +40,29 @@ redis:
   idle_timeout: 200
 
 kafka:
-  hosts: ["host.docker.internal:9092"]
+  hosts: ["127.0.0.1:9092"]
+#  hosts: ["host.docker.internal:9092"]
 
 zap:
+  log-level: 'info'
+  log-mode: 'console'          # 生产环境改为 'json'
+  log-output: 'both'           # 生产环境改为 'stdout'（ELK）或 'file'
   log-filepath: 'runtime/logs'
-  log-info-filename: 'info'
-  log-warn-filename: 'warn'
   log-file-ext: 'log'
-  log-console: true
+  max-size: 100                # 单文件 100MB
+  max-age: 30                  # 保留 30 天
+  max-backups: 30              # 最多 30 个文件
+  compress: true
+  modules:
+    - 'app'                    # 默认全局
+    - 'order'                  # 订单
+    - 'product'                # 商品
+    - 'user'                   # 用户
+    - 'auth'                   # 鉴权/登录
+    - 'http'                   # HTTP 请求/中间件
+    - 'menu'                   # 菜单
+    - 'role'                   # 角色
+    - 'upload'                 # 文件上传
 
 wechat:
   app_id:

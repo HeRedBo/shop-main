@@ -2,7 +2,6 @@ package models
 
 import (
 	"shop/pkg/global"
-	"shop/pkg/logging"
 	"shop/pkg/util"
 )
 
@@ -101,13 +100,13 @@ func BuildMenus(uid int64) []SysMenu {
 	err := global.Db.Raw("SELECT r.* FROM sys_role r, sys_users_roles u "+
 		"WHERE r.id = u.sys_role_id AND u.sys_user_id = ?", uid).Find(&lists).Error
 	if err != nil {
-		logging.Error(err)
+		global.GetLogger("menu").Errorf("query roles error: %v", err)
 	}
 	for i := 0; i < len(lists); i++ {
 		roleIds = append(roleIds, lists[i].Id)
 	}
 	idsStr := util.Convert(roleIds)
-	logging.Info(idsStr)
+	global.GetLogger("menu").Infof("role ids: %s", idsStr)
 	var menus []SysMenu
 	e := global.Db.Raw("select m.* from sys_menu m LEFT OUTER JOIN sys_roles_menus t on m.id= t.sys_menu_id "+
 		"LEFT OUTER JOIN sys_role r on r.id = t.sys_role_id where m.is_del=0  and m.type!=2 and r.id in (?) "+
@@ -115,7 +114,7 @@ func BuildMenus(uid int64) []SysMenu {
 		idsStr).Scan(&menus).Error
 
 	if e != nil {
-		logging.Error(e)
+		global.GetLogger("menu").Errorf("query menus error: %v", e)
 	}
 
 	return menus

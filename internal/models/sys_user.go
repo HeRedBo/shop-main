@@ -2,7 +2,6 @@ package models
 
 import (
 	"shop/pkg/global"
-	"shop/pkg/logging"
 	"shop/pkg/util"
 )
 
@@ -49,7 +48,7 @@ func FindByUserId(id int64) ([]string, error) {
 	var menus []SysMenu
 	global.Db.Table("sys_menu").Where("id in (?)", menuIds).Find(&menus)
 
-	logging.Info(roles)
+	global.GetLogger("user").Infof("roles: %v", roles)
 	var permissions []string
 
 	for _, m := range menus {

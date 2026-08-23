@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	dto2 "shop/internal/service/product_service/dto"
 	"shop/pkg/global"
-	"shop/pkg/logging"
 	"time"
 )
 
@@ -28,7 +27,7 @@ func GetProductAttrResult(productId int64) map[string]interface{} {
 
 	e := json.Unmarshal([]byte(result.Result), &data)
 	if e != nil {
-		logging.Error(e)
+		global.GetLogger("product").Errorf("unmarshal product attr result error: %v", e)
 	}
 
 	return data

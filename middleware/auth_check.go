@@ -12,7 +12,6 @@ import (
 	"shop/pkg/constant"
 	"shop/pkg/global"
 	"shop/pkg/jwt"
-	"shop/pkg/logging"
 	"shop/pkg/runtime"
 	"strings"
 )
@@ -33,7 +32,7 @@ func AppJwt() gin.HandlerFunc {
 		token := strings.TrimSpace(mytoken[bearerLength:])
 		usr, err := jwt.ValidateToken(token)
 		if err != nil {
-			global.LOG.Error(err)
+			global.GetLogger("auth").Errorf("ValidateToken error: %v", err)
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH_CHECK_TOKEN_FAIL, data)
 			c.Abort()
 			return
@@ -59,7 +58,7 @@ func Jwt() gin.HandlerFunc {
 		token := strings.TrimSpace(mytoken[bearerLength:])
 		usr, err := jwt.ValidateToken(token)
 		if err != nil {
-			logging.Info(err)
+			global.GetLogger("auth").Errorf("ValidateToken error: %v", err)
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH_CHECK_TOKEN_FAIL, data)
 			c.Abort()
 			return
@@ -79,10 +78,10 @@ func Jwt() gin.HandlerFunc {
 			if roleName == "admin" {
 				break
 			}
-			logging.Info(roleName, url, method)
+			global.GetLogger("auth").Infof("casbin check: role=%s, url=%s, method=%s", roleName, url, method)
 			res, err := cb.Enforce(roleName, url, method)
 			if err != nil {
-				logging.Error(err)
+				global.GetLogger("auth").Errorf("casbin enforce error: %v", err)
 			}
 			//logging.Info(res)
 
@@ -105,7 +104,7 @@ func Auth() gin.HandlerFunc {
 		authorizationDate := c.GetHeader(constant.HeaderAuthDateField)
 		if len(authorization) == 0 || len(authorizationDate) == 0 {
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH, data)
-			logging.Error(" empty authorization header info", authorization, authorizationDate)
+			global.GetLogger("auth").Errorf("empty authorization header info: %v, %v", authorization, authorizationDate)
 			c.Abort()
 			return
 		}
@@ -113,7 +112,7 @@ func Auth() gin.HandlerFunc {
 		authorizationSplit := strings.Split(authorization, " ")
 		if len(authorizationSplit) < 2 {
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH, data)
-			logging.Error("authorizationSplit error", authorizationSplit)
+			global.GetLogger("auth").Errorf("authorizationSplit error: %v", authorizationSplit)
 			c.Abort()
 			return
 		}
@@ -131,14 +130,14 @@ func Auth() gin.HandlerFunc {
 		dump.P(auth)
 		if err != nil {
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH, data)
-			logging.Error("DetailByKey error", err, authorizationSplit)
+			global.GetLogger("auth").Errorf("DetailByKey error: %v, split: %v", err, authorizationSplit)
 			c.Abort()
 			return
 		}
 
 		if auth.IsUsed == models.IsUsedNo {
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH, data)
-			logging.Error("IsUsed error", authorizationSplit)
+			global.GetLogger("auth").Errorf("IsUsed check failed, split: %v", authorizationSplit)
 			c.Abort()
 			return
 		}
@@ -147,11 +146,11 @@ func Auth() gin.HandlerFunc {
 			c.Request.URL.Path, c.Request.Method, c.Request.Form)
 		if err != nil {
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH, data)
-			logging.Error("sign verify error", err)
+			global.GetLogger("auth").Errorf("sign verify error: %v", err)
 		}
 		if !ok {
 			appG.Response(http.StatusUnauthorized, constant.ERROR_AUTH, data)
-			logging.Error("sign verify not ok")
+			global.GetLogger("auth").Error("sign verify not ok")
 			c.Abort()
 			return
 		}

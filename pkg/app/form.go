@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"shop/pkg/constant"
-	"shop/pkg/logging"
+	"shop/pkg/global"
 	"strings"
 )
 
@@ -15,14 +15,14 @@ import (
 func BindAndValid(c *gin.Context, form interface{}) (int, int) {
 	err := c.Bind(form)
 	if err != nil {
-		logging.Error(err)
+		global.GetLogger("http").Errorf("bind form error: %v", err)
 		return http.StatusBadRequest, constant.INVALID_PARAMS
 	}
 
 	valid := validation.Validation{}
 	check, err := valid.Valid(form)
 	if err != nil {
-		logging.Error(err)
+		global.GetLogger("http").Errorf("validate form error: %v", err)
 		return http.StatusInternalServerError, constant.ERROR
 	}
 	if !check {
@@ -36,14 +36,14 @@ func BindAndValid(c *gin.Context, form interface{}) (int, int) {
 func BindAndValidate(c *gin.Context, form interface{}) error {
 	err := c.Bind(form)
 	if err != nil {
-		logging.Error(err)
+		global.GetLogger("http").Errorf("bind form error: %v", err)
 		return err
 	}
 
 	valid := validation.Validation{}
 	check, err := valid.Valid(form)
 	if err != nil {
-		logging.Error(err)
+		global.GetLogger("http").Errorf("validate form error: %v", err)
 		return err
 	}
 	if !check {

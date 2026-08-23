@@ -10,7 +10,7 @@ import (
 	"shop/internal/service/role_service"
 	"shop/pkg/app"
 	"shop/pkg/constant"
-	"shop/pkg/logging"
+	"shop/pkg/global"
 	"shop/pkg/util"
 )
 
@@ -133,7 +133,7 @@ func (e *RoleController) Menu(c *gin.Context) {
 		appG  = app.Gin{C: c}
 	)
 	httpCode, errCode := app.BindAndValid(c, &model)
-	logging.Info(model)
+	global.GetLogger("role").Infof("role menu bind: %+v", model)
 	if errCode != constant.SUCCESS {
 		appG.Response(httpCode, errCode, nil)
 		return

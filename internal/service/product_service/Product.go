@@ -21,7 +21,6 @@ import (
 	"shop/pkg/constant"
 	productEnum "shop/pkg/enums/product"
 	"shop/pkg/global"
-	"shop/pkg/logging"
 	"shop/pkg/util"
 	"sort"
 	"strconv"
@@ -364,7 +363,7 @@ func (d *Product) GetProductInfo() map[string]interface{} {
 	StoreProduct = models.GetProduct(d.Id)
 	ee := copier.Copy(&productDto, StoreProduct)
 	if ee != nil {
-		logging.Error(ee)
+		global.GetLogger("product").Errorf("copy product error: %v", ee)
 	}
 	productDto.SliderImage = strings.Split(StoreProduct.SliderImage, ",")
 	res := models.GetProductAttrResult(d.Id)
@@ -519,7 +518,7 @@ func getFormatAttr(id int64, jsonObj map[string]interface{}) map[string]interfac
 
 		//组合表格头
 		var i int = 0
-		logging.Info(detailMap)
+		global.GetLogger("product").Infof("detailMap: %v", detailMap)
 		if count == 0 {
 			for kk, _ := range detailMap {
 				headerMap := make(map[string]interface{})
@@ -549,7 +548,7 @@ func getFormatAttr(id int64, jsonObj map[string]interface{}) map[string]interfac
 		}
 		sort.Strings(skuArr)
 		sku := strings.Join(skuArr, ",")
-		logging.Info("sku:" + sku)
+		global.GetLogger("product").Infof("sku:%s", sku)
 		valueMap["detail"] = detailMap
 		valueMap["pic"] = ""
 		valueMap["price"] = "0"

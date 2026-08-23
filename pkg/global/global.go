@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"shop/conf"
+	"shop/pkg/logging"
 )
 
 var (
@@ -16,6 +17,11 @@ var (
 	CONFIG         conf.Config
 	WechatOfficial *officialaccount.OfficialAccount
 )
+
+// GetLogger 获取指定业务模块的 logger
+func GetLogger(module string) *zap.SugaredLogger {
+	return logging.GetLogger(module)
+}
 
 // 加载配置，失败直接panic
 func LoadConfig() {

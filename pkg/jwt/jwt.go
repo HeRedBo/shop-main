@@ -11,7 +11,6 @@ import (
 	"shop/internal/models/vo"
 	"shop/pkg/constant"
 	"shop/pkg/global"
-	"shop/pkg/logging"
 	"strconv"
 	"strings"
 	"time"
@@ -63,7 +62,7 @@ func GenerateAppToken(m *models.ShopUser, d time.Duration) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, uClaims)
 	tokenString, err := token.SignedString(jwtSecret)
 	if err != nil {
-		logging.Error(err)
+		global.GetLogger("auth").Errorf("GenerateAppToken sign error: %v", err)
 	}
 	//set redis
 	var key = constant.AppRedisPrefixAuth + tokenString
@@ -184,7 +183,7 @@ func GenerateToken(m *models.SysUser, d time.Duration) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, uClaims)
 	tokenString, err := token.SignedString(jwtSecret)
 	if err != nil {
-		logging.Error(err)
+		global.GetLogger("auth").Errorf("GenerateToken sign error: %v", err)
 	}
 	//set redis
 	var key = constant.RedisPrefixAuth + tokenString
@@ -212,7 +211,7 @@ func ValidateToken(tokenString string) (*vo.JwtUser, error) {
 		return jwtSecret, nil
 	})
 	if err != nil {
-		logging.Error(err)
+		global.GetLogger("auth").Errorf("ValidateToken error: %v", err)
 		return nil, err
 	}
 	return &claims.JwtUser, err

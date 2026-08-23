@@ -64,11 +64,16 @@ type Server struct {
 }
 
 type Zap struct {
-	LogFilePath     string `mapstructure:"log-filepath" yaml:"log-filepath"`
-	LogInfoFileName string `mapstructure:"log-info-filename" yaml:"log-info-filename"`
-	LogWarnFileName string `mapstructure:"log-warn-filename" yaml:"log-warn-filename"`
-	LogFileExt      string `mapstructure:"log-file-ext" yaml:"log-file-ext"`
-	LogConsole      bool   `mapstructure:"log-console" yaml:"log-console"`
+	LogLevel    string   `mapstructure:"log-level" yaml:"log-level"`           // debug / info / warn / error
+	LogMode     string   `mapstructure:"log-mode" yaml:"log-mode"`             // console / json
+	LogOutput   string   `mapstructure:"log-output" yaml:"log-output"`         // stdout / file / both
+	LogFilepath string   `mapstructure:"log-filepath" yaml:"log-filepath"`     // 日志文件根目录
+	LogFileExt  string   `mapstructure:"log-file-ext" yaml:"log-file-ext"`     // 文件扩展名
+	MaxSize     int      `mapstructure:"max-size" yaml:"max-size"`             // 单文件最大 MB
+	MaxAge      int      `mapstructure:"max-age" yaml:"max-age"`               // 保留天数
+	MaxBackups  int      `mapstructure:"max-backups" yaml:"max-backups"`       // 保留文件数
+	Compress    bool     `mapstructure:"compress" yaml:"compress"`             // 压缩旧文件
+	Modules     []string `mapstructure:"modules" yaml:"modules"`               // 业务模块列表
 }
 
 type Kafka struct {

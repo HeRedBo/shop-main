@@ -3,12 +3,10 @@ package upload
 import (
 	"fmt"
 	"github.com/HeRedBo/pkg/file"
-	"log"
 	"mime/multipart"
 	"os"
 	"path"
 	"shop/pkg/global"
-	"shop/pkg/logging"
 	"shop/pkg/util"
 	"strings"
 )
@@ -53,8 +51,7 @@ func CheckImageExt(fileName string) bool {
 func CheckImageSize(f multipart.File) bool {
 	size, err := file.GetSize(f)
 	if err != nil {
-		log.Println(err)
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("get file size error: %v", err)
 		return false
 	}
 

@@ -10,8 +10,8 @@ import (
 	"shop/internal/service/user_service"
 	"shop/pkg/app"
 	"shop/pkg/constant"
+	"shop/pkg/global"
 	"shop/pkg/jwt"
-	"shop/pkg/logging"
 	"shop/pkg/util"
 	"time"
 )
@@ -40,7 +40,7 @@ func (e *LoginController) Login(c *gin.Context) {
 	)
 
 	httpCode, errCode := app.BindAndValid(c, &authUser)
-	logging.Info(authUser)
+	global.GetLogger("auth").Infof("login attempt: %+v", authUser)
 	if errCode != constant.SUCCESS {
 		appG.Response(httpCode, errCode, nil)
 		return
@@ -131,7 +131,7 @@ func GenerateCaptcha(c *gin.Context) {
 	captcha := base64Captcha.NewCaptcha(driver, store)
 	id, b64s, _, err := captcha.Generate()
 	if err != nil {
-		logging.Error(err.Error())
+		global.GetLogger("auth").Errorf("captcha generate error: %v", err.Error())
 	}
 	captchaResult := CaptchaResult{
 		Id:         id,

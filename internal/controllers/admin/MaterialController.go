@@ -10,7 +10,6 @@ import (
 	"shop/pkg/constant"
 	"shop/pkg/global"
 	"shop/pkg/jwt"
-	"shop/pkg/logging"
 	"shop/pkg/upload"
 	"shop/pkg/util"
 )
@@ -126,7 +125,7 @@ func (e *MaterialController) Upload(c *gin.Context) {
 	appG := app.Gin{C: c}
 	file, image, err := c.Request.FormFile("file")
 	if err != nil {
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("form file error: %v", err)
 		appG.Response(http.StatusInternalServerError, constant.ERROR, nil)
 		return
 	}
@@ -148,13 +147,13 @@ func (e *MaterialController) Upload(c *gin.Context) {
 
 	err = upload.CheckImage(fullPath)
 	if err != nil {
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("check image error: %v", err)
 		appG.Response(http.StatusInternalServerError, constant.ERROR_UPLOAD_CHECK_IMAGE_FAIL, nil)
 		return
 	}
 
 	if err := c.SaveUploadedFile(image, src); err != nil {
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("save uploaded file error: %v", err)
 		appG.Response(http.StatusInternalServerError, constant.ERROR_UPLOAD_SAVE_IMAGE_FAIL, nil)
 		return
 	}

@@ -9,8 +9,8 @@ import (
 	dto2 "shop/internal/service/user_service/dto"
 	"shop/pkg/app"
 	"shop/pkg/constant"
+	"shop/pkg/global"
 	"shop/pkg/jwt"
-	"shop/pkg/logging"
 	"shop/pkg/upload"
 	"shop/pkg/util"
 )
@@ -124,7 +124,7 @@ func (e *UserController) Avatar(c *gin.Context) {
 	appG := app.Gin{C: c}
 	file, image, err := c.Request.FormFile("file")
 	if err != nil {
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("form file error: %v", err)
 		appG.Response(http.StatusInternalServerError, constant.ERROR, nil)
 		return
 	}
@@ -145,13 +145,13 @@ func (e *UserController) Avatar(c *gin.Context) {
 
 	err = upload.CheckImage(fullPath)
 	if err != nil {
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("check image error: %v", err)
 		appG.Response(http.StatusInternalServerError, constant.ERROR_UPLOAD_CHECK_IMAGE_FAIL, nil)
 		return
 	}
 
 	if err := c.SaveUploadedFile(image, src); err != nil {
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("save uploaded file error: %v", err)
 		appG.Response(http.StatusInternalServerError, constant.ERROR_UPLOAD_SAVE_IMAGE_FAIL, nil)
 		return
 	}
@@ -224,7 +224,7 @@ func UploadImage(c *gin.Context) {
 	appG := app.Gin{C: c}
 	file, image, err := c.Request.FormFile("image")
 	if err != nil {
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("form image error: %v", err)
 		appG.Response(http.StatusInternalServerError, constant.ERROR, nil)
 		return
 	}
@@ -246,13 +246,13 @@ func UploadImage(c *gin.Context) {
 
 	err = upload.CheckImage(fullPath)
 	if err != nil {
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("check image error: %v", err)
 		appG.Response(http.StatusInternalServerError, constant.ERROR_UPLOAD_CHECK_IMAGE_FAIL, nil)
 		return
 	}
 
 	if err := c.SaveUploadedFile(image, src); err != nil {
-		logging.Warn(err)
+		global.GetLogger("upload").Warnf("save uploaded file error: %v", err)
 		appG.Response(http.StatusInternalServerError, constant.ERROR_UPLOAD_SAVE_IMAGE_FAIL, nil)
 		return
 	}

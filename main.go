@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"shop/internal/observers"
-	"shop/pkg/base"
 	"shop/pkg/casbin"
 	"shop/pkg/global"
 	"shop/pkg/jwt"
@@ -23,8 +22,9 @@ import (
 
 func init() {
 	global.LoadConfig()
-	global.LOG = base.SetupLogger()
-	logging.Init()
+	// 初始化日志管理器
+	logging.NewManager(logging.NewLogConfig(global.CONFIG.Zap))
+	global.LOG = global.GetLogger("app")
 	//初始化redis
 	err := cache.InitRedis(cache.DefaultRedisClient, &redis.Options{
 		Addr:        global.CONFIG.Redis.Host,
@@ -72,7 +72,7 @@ func main() {
 	go func() {
 		err := server.ListenAndServe()
 		if err != nil {
-			logging.Error("start http server error", err)
+			global.LOG.Error("start http server error", err)
 		} else {
 			fmt.Println("start http server listening", endPoint)
 		}
@@ -85,19 +85,21 @@ func main() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 			defer cancel()
 			if err := server.Shutdown(ctx); err != nil {
-				logging.Error("http server shutdown error", err)
+				global.LOG.Error("http server shutdown error", err)
 			}
+			// 刷新所有 logger 缓冲
+			logging.SyncAll()
 		},
 		//关闭kafka producer
 		func() {
 			if err := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Close(); err != nil {
-				logging.Error("kafka close error", err, "client", mq.DefaultKafkaSyncProducer)
+				global.LOG.Error("kafka close error", err, "client", mq.DefaultKafkaSyncProducer)
 			}
 		},
 		//关闭mysql
 		func() {
 			if err := db.CloseMysqlClient(db.DefaultClient); err != nil {
-				logging.Error("CloseMysqlClient error", err, "client", db.DefaultClient)
+				global.LOG.Error("CloseMysqlClient error", err, "client", db.DefaultClient)
 			}
 		},
 	)

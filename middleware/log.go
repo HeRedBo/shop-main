@@ -4,8 +4,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"regexp"
 	"shop/internal/models"
+	"shop/pkg/global"
 	"shop/pkg/jwt"
-	"shop/pkg/logging"
 	"strings"
 	"time"
 )
@@ -13,10 +13,12 @@ import (
 func Log() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		url := c.Request.URL.Path
-		logging.Info(url)
+		global.GetLogger("http").Infof("request: %s", url)
 		method := strings.ToLower(c.Request.Method)
 		user, err := jwt.GetAdminUser(c)
-		logging.Error(err)
+		if err != nil {
+			global.GetLogger("http").Errorf("GetAdminUser error: %v", err)
+		}
 		if err != nil {
 			c.Next()
 			return
