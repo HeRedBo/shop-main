@@ -14,6 +14,7 @@ import (
 
 	"github.com/HeRedBo/pkg/cache"
 	"github.com/HeRedBo/pkg/db"
+	"github.com/HeRedBo/pkg/logx/zapx"
 	"github.com/HeRedBo/pkg/mq"
 	"github.com/HeRedBo/pkg/shutdown"
 	"github.com/gin-gonic/gin"
@@ -37,9 +38,19 @@ func init() {
 	}
 
 	//初始化mysql
-	err = db.InitMysqlClient(db.DefaultClient, global.CONFIG.Database.User,
-		global.CONFIG.Database.Password, global.CONFIG.Database.Host,
-		global.CONFIG.Database.Name)
+	// MySQL 日志注入：业务日志和 SQL 查询日志分离
+	mysqlLogger := zapx.New(logging.GetZapLogger("mysql"))
+	mysqlQueryLogger := zapx.New(logging.GetZapLogger("mysql_query"))
+
+	err = db.InitMysqlClientWithOptions(db.DefaultClient,
+		global.CONFIG.Database.User,
+		global.CONFIG.Database.Password,
+		global.CONFIG.Database.Host,
+		global.CONFIG.Database.Name,
+		db.WithLogger(mysqlLogger),        // 业务/错误日志 → runtime/logs/mysql/
+		db.WithSQLLogger(mysqlQueryLogger), // SQL 查询日志 → runtime/logs/mysql_query/
+		db.WithEnableSqlLog(true),          // 启用 SQL 日志打印
+	)
 	if err != nil {
 		global.LOG.Error("InitMysqlClient error", err, "client", db.DefaultClient)
 	}
@@ -48,6 +59,10 @@ func init() {
 	// 初始化模型观察者
 	observers.RegisterAll(global.Db)
 	jwt.Init()
+
+	// MQ 日志注入：Kafka 日志输出到独立模块
+	mqLogger := zapx.New(logging.GetZapLogger("mq"))
+	mq.SetLogger(mqLogger)
 
 	err = mq.InitSyncKafkaProducer(mq.DefaultKafkaSyncProducer, global.CONFIG.Kafka.Hosts, nil)
 	if err != nil {

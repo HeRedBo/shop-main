@@ -6,10 +6,11 @@ toolchain go1.24.11
 
 require (
 	github.com/HeRedBo/pkg/cache v0.0.0-20250421154535-ac0072629fbe
-	github.com/HeRedBo/pkg/db v0.0.0-20250420065555-ee1554f86e30
+	github.com/HeRedBo/pkg/db v0.0.0-20260831073628-15f355b79368
 	github.com/HeRedBo/pkg/file v1.0.0
 	github.com/HeRedBo/pkg/httpclient v0.0.0-20250518092132-658893059cf6
-	github.com/HeRedBo/pkg/mq v0.0.0-20250423101152-64fca6d7ed67
+	github.com/HeRedBo/pkg/logx v0.0.0-20260830141419-92011b3cc7d8
+	github.com/HeRedBo/pkg/mq v0.0.0-20260831081433-225bdd1ff04b
 	github.com/HeRedBo/pkg/shutdown v0.0.0-20250421154535-ac0072629fbe
 	github.com/HeRedBo/pkg/sign v0.0.0-20250521224933-16789602bd01
 	github.com/HeRedBo/pkg/strutil v0.0.0-20250518092132-658893059cf6
@@ -108,7 +109,7 @@ require (
 	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect
 	github.com/shiena/ansicolor v0.0.0-20151119151921-a422bbe96644 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/afero v1.12.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
