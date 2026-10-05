@@ -66,6 +66,8 @@ zap:
     - 'mysql'                  # MySQL 业务/错误日志
     - 'mysql_query'            # MySQL SQL 查询日志（与 mysql 分离）
     - 'mq'                     # Kafka 消息队列日志
+    - 'product_sync'            # 商品同步
+    - 'order_report'            # 订单统计报表
 
 wechat:
   app_id:

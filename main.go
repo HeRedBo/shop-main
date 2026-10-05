@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net/http"
+	"shop/internal/bootstrap"
 	"shop/internal/observers"
 	"shop/pkg/casbin"
 	"shop/pkg/global"
@@ -21,12 +23,24 @@ import (
 	"github.com/go-redis/redis/v7"
 )
 
+var configPath string
+
 func init() {
-	global.LoadConfig()
+	flag.StringVar(&configPath, "config", bootstrap.DefaultConfigPath, "配置文件路径")
+}
+
+func main() {
+	flag.Parse()
+
+	// 解析配置文件路径
+	resolvedPath := bootstrap.ResolveConfigPath(configPath)
+	global.LoadConfigWithPath(resolvedPath)
+
 	// 初始化日志管理器
 	logging.NewManager(logging.NewLogConfig(global.CONFIG.Zap))
 	global.LOG = global.GetLogger("app")
-	//初始化redis
+
+	// 初始化 Redis
 	err := cache.InitRedis(cache.DefaultRedisClient, &redis.Options{
 		Addr:        global.CONFIG.Redis.Host,
 		Password:    global.CONFIG.Redis.Password,
@@ -37,7 +51,7 @@ func init() {
 		panic(err)
 	}
 
-	//初始化mysql
+	// 初始化 MySQL
 	// MySQL 日志注入：业务日志和 SQL 查询日志分离
 	mysqlLogger := zapx.New(logging.GetZapLogger("mysql"))
 	mysqlQueryLogger := zapx.New(logging.GetZapLogger("mysql_query"))
@@ -69,9 +83,7 @@ func init() {
 		global.LOG.Error("InitSyncKafkaProducer err", err, "client", mq.DefaultKafkaSyncProducer)
 		panic(err)
 	}
-}
 
-func main() {
 	gin.SetMode(global.CONFIG.Server.RunMode)
 	routersInit := routers.InitRouter()
 	endPoint := fmt.Sprintf(":%d", global.CONFIG.Server.HttpPort)

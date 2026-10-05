@@ -8,3 +8,6 @@ shop.tar.gz
 tmp/
 .air.toml
 .vscode/
+
+# Build output
+build/

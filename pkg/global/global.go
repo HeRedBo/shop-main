@@ -25,23 +25,28 @@ func GetLogger(module string) *zap.SugaredLogger {
 
 // 加载配置，失败直接panic
 func LoadConfig() {
-	viper := viper.New()
+	LoadConfigWithPath("conf/config.yml")
+}
+
+// LoadConfigWithPath 从指定路径加载配置文件
+func LoadConfigWithPath(configPath string) {
+	v := viper.New()
 	//1.设置配置文件路径
-	viper.SetConfigFile("conf/config.yml")
+	v.SetConfigFile(configPath)
 	//2.配置读取
-	if err := viper.ReadInConfig(); err != nil {
+	if err := v.ReadInConfig(); err != nil {
 		panic(err)
 	}
 	//3.将配置映射成结构体
-	if err := viper.Unmarshal(&CONFIG); err != nil {
+	if err := v.Unmarshal(&CONFIG); err != nil {
 		panic(err)
 	}
 
-	//4. 监听配置文件变动,重新解析配置
-	viper.WatchConfig()
-	viper.OnConfigChange(func(e fsnotify.Event) {
+	//4. 监听配置文件变动, 重新解析配置
+	v.WatchConfig()
+	v.OnConfigChange(func(e fsnotify.Event) {
 		fmt.Println(e.Name)
-		if err := viper.Unmarshal(&CONFIG); err != nil {
+		if err := v.Unmarshal(&CONFIG); err != nil {
 			panic(err)
 		}
 	})
