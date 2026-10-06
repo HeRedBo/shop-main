@@ -77,14 +77,16 @@ cmd/worker/main.go
 │       → 按 topic 注册 ProductHandler / OrderHandler
 │
 ├── 4. engine.Start()
-│       → 创建 sarama ConsumerGroup
-│       → 创建 Consumer（启动 Worker Pool + consumeLoop）
+│       → 创建 sarama ConsumerGroup（所有 Consumer 共享同一个 group）
+│       → 遍历 config.Handlers，为每个 handler 创建独立 Consumer
+│         (配置降级: Handler级 → Default级 → 旧全局级 → 常量默认值)
+│       → 启动所有 Consumer（各自的 Worker Pool + consumeLoop）
 │       → 创建并启动 Relay（3 个 Ticker 循环）
 │
 ├── 5. signal.NotifyContext → 阻塞等待 SIGINT/SIGTERM
 │
 ├── 6. engine.Stop()
-│       → 有序关闭 Relay → Consumer → ConsumerGroup
+│       → 有序关闭 Relay → 遍历关闭所有 Consumer → ConsumerGroup
 │
 └── 7. bootstrap.Shutdown()
         → 关闭 Kafka → Redis → MySQL → 刷新日志
@@ -94,29 +96,77 @@ cmd/worker/main.go
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                       Engine                                 │
+│                        Engine                               │
 │  (管理所有 Worker 组件的生命周期)                              │
 │                                                             │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────┐ │
-│  │     Relay       │  │    Consumer     │  │   Registry  │ │
-│  │                 │  │                 │  │             │ │
-│  │  3 个 Ticker:   │  │  双缓冲架构:    │  │  topic →    │ │
-│  │  • scan-deliver │  │  • Poller       │  │  Handler    │ │
-│  │  • reclaim-lease│  │  • tasks chan   │  │  映射表     │ │
-│  │  • cleanup-sent │  │  • Worker Pool  │  │             │ │
-│  └─────────────────┘  └─────────────────┘  └─────────────┘ │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │                    Relay 模块                          │  │
+│  │  (Outbox 扫描 → Kafka 投递 → 租约回收 → 定期清理)     │  │
+│  └───────────────────────────────────────────────────────┘  │
 │                                                             │
-│  config: WorkerConfig                                       │
-│  ctx/cancel: 全局上下文控制                                   │
-│  mu + started: 防重入锁                                      │
+│  ┌─────────────────────┐    ┌─────────────────────┐        │
+│  │  Consumer (订单)     │    │  Consumer (商品)     │        │
+│  │  topic: order-events │    │  topic: product-    │        │
+│  │  concurrency: 20     │    │         events      │        │
+│  │  buffer: 2000        │    │  concurrency: 10    │        │
+│  │                      │    │  buffer: 1000       │        │
+│  │  tasks A → Pool A    │    │                     │        │
+│  │  (20 goroutine)      │    │  tasks B → Pool B   │        │
+│  │                      │    │  (10 goroutine)     │        │
+│  └──────────┬───────────┘    └──────────┬──────────┘        │
+│             │                           │                   │
+│             ▼                           ▼                   │
+│      OrderHandler               ProductHandler             │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │                   Registry                            │  │
+│  │  topic → Handler 映射表 (所有 Consumer 共享)          │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                             │
+│  config: WorkerConfig (含 handlers[] + default-* 兜底)      │
+│  ctx/cancel: 全局上下文控制                                  │
+│  mu + started: 防重入锁                                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**说明**：Engine 是 Worker 进程的核心，管理 Relay（Outbox 扫描投递）、Consumer（Kafka 消费）和 Registry（Handler 注册表）三个核心组件的创建、启动和关闭。
+**说明**：Engine 是 Worker 进程的核心，管理 Relay（Outbox 扫描投递）、多个 Consumer（每个 topic 独立的 Kafka 消费实例）和 Registry（Handler 注册表，所有 Consumer 共享）的生命周期。改造后 Engine 内部维护 `consumers []*Consumer` 切片，每个 Consumer 拥有独立的 tasks channel 和 Worker Pool，实现资源隔离。所有 Consumer 共享同一个 sarama ConsumerGroup。
 
 ---
 
 ## 三、双缓冲消费者架构（核心）
+
+### 3.1 per-Handler 独立 Consumer 架构（新模式）
+
+```
+                    Kafka Cluster
+                    ┌─────────┐ ┌─────────┐
+                    │order-   │ │product- │
+                    │events   │ │events   │
+                    └────┬────┘ └────┬────┘
+                         │           │
+              ┌──────────▼──┐  ┌────▼──────────┐
+              │ Consumer A  │  │ Consumer B    │
+              │ (订单)       │  │ (商品)         │
+              │ concurrency │  │ concurrency   │
+              │ = 20        │  │ = 10          │
+              │ buffer=2000 │  │ buffer=1000   │
+              └──────┬──────┘  └──────┬────────┘
+                     │                │
+              ┌──────▼──────┐  ┌─────▼─────────┐
+              │ tasks A     │  │ tasks B       │
+              │ (buffer     │  │ (buffer       │
+              │  2000)      │  │  1000)        │
+              └──────┬──────┘  └──────┬────────┘
+                     │                │
+         ┌───────────┼─────┐    ┌─────┼──────────┐
+         ▼           ▼     ▼    ▼     ▼          ▼
+      [W-0] ... [W-19]         [W-0] ... [W-9]
+      (20 goroutine)           (10 goroutine)
+```
+
+**说明**：每个 topic 对应一个独立的 Consumer 实例，拥有自己的 tasks channel 和 Worker Pool。慢处理不会影响其他 topic 的消费。所有 Consumer 共享同一个 sarama ConsumerGroup，通过 RoundRobin 分区策略分配 partition。
+
+### 3.2 单个 Consumer 内部双缓冲细节
 
 ```
                     Kafka Cluster
@@ -144,15 +194,15 @@ cmd/worker/main.go
           └──────────────┬──────────────┘
                          │
               ┌──────────▼──────────┐
-              │   tasks channel     │  ← chan *Event, 缓冲 1000
-              │   (背压机制)         │    满时阻塞 ConsumeClaim
-              └──────────┬──────────┘    不会丢失消息
+              │   tasks channel     │  ← chan *Event, 缓冲可配置
+              │   (背压机制)         │    默认 1000，满时阻塞
+              └──────────┬──────────┘    ConsumeClaim
                          │
           ┌──────────────┼──────────────┐
           ▼              ▼              ▼
     ┌──────────┐  ┌──────────┐  ┌──────────┐
     │Worker-0  │  │Worker-1  │  │Worker-N  │  ← Worker Pool
-    │          │  │          │  │          │    concurrency=10
+    │          │  │          │  │          │    concurrency 可配置
     │defer     │  │defer     │  │defer     │    每个 Worker 有
     │recover() │  │recover() │  │recover() │    panic 恢复
     │          │  │          │  │          │
@@ -180,7 +230,7 @@ cmd/worker/main.go
     └──────────────────────────────────────┘
 ```
 
-**说明**：双缓冲架构将消息拉取（ConsumeClaim/Poller）和消息处理（Worker Pool）分离为独立的 goroutine 池。慢处理不会阻塞 Kafka 拉取，避免 rebalance。`tasks` channel 设置有界缓冲（1000），满时自动背压，天然限流。每个 Worker goroutine 顶层有 `defer recover()` 防止 panic 导致 goroutine 泄漏。
+**说明**：双缓冲架构将消息拉取（ConsumeClaim/Poller）和消息处理（Worker Pool）分离为独立的 goroutine 池。慢处理不会阻塞 Kafka 拉取，避免 rebalance。`tasks` channel 设置有界缓冲（默认 1000，可通过配置调整），满时自动背压，天然限流。每个 Worker goroutine 顶层有 `defer recover()` 防止 panic 导致 goroutine 泄漏。
 
 ---
 
@@ -254,7 +304,9 @@ HTTP 请求
                  ┌─────────────────────▼─────────────────────┐
                  │           Worker Consumer                  │
                  │                                           │
+                 │  每个 topic 独立 Consumer                  │
                  │  ConsumeClaim → tasks chan → Worker Pool  │
+                 │  (订单: 20并发, 商品: 10并发)              │
                  └─────────────────────┬─────────────────────┘
                                        │
                                        ▼
@@ -474,16 +526,31 @@ observers/register.go → RegisterAll(global.Db)
 ### 8.1 config.yml 中的 worker 配置
 
 ```yaml
-kafka:
-  hosts: ["127.0.0.1:9092"]
-
 worker:
   enabled: true
   group-id: "shop-worker"
+
+  # ===== 方式一：per-Handler 独立配置（推荐） =====
+  handlers:
+    - topic: "shop-order-events"
+      concurrency: 20
+      ordered: false
+      buffer-size: 2000
+    - topic: "shop-product-events"
+      concurrency: 10
+      ordered: false
+      buffer-size: 1000
+
+  # ===== 方式二：全局配置（向后兼容，handlers 为空时生效） =====
   topics:
     - "shop-product-events"
     - "shop-order-events"
   concurrency: 10
+
+  # 全局默认值（handlers 中未指定的字段使用此默认值）
+  default-concurrency: 10
+  default-buffer-size: 1000
+
   poll-interval: "2s"
   max-retries: 5
   retry-base-delay: "1s"
@@ -500,11 +567,22 @@ WorkerConfig (conf/conf.go)
 │
 ├── group-id: string           → Consumer Group ID（Kafka 消费组标识）
 │
-├── topics: []string           → 监听的 Topic 列表
-│                               └── 对应 Registry 中的 Handler
+├── handlers: []HandlerConfig  → per-Handler 独立配置（推荐方式）
+│   ├── [0] topic: string      → 监听的 Topic
+│   │   [0] concurrency: int   → 该 Handler 的 Worker Pool 并发数
+│   │   [0] ordered: bool      → 是否有序消费（同 key 同 worker，预留字段）
+│   │   [0] buffer-size: int   → tasks channel 缓冲大小
+│   └── [1] ...                → 更多 Handler 配置
 │
-├── concurrency: int           → Worker Pool 并发数（全局共享）
-│                               └── 即从 tasks channel 读取的 goroutine 数量
+├── default-concurrency: int   → 全局默认并发数（handlers 中未指定时使用）
+│
+├── default-buffer-size: int   → 全局默认缓冲大小（handlers 中未指定时使用）
+│
+├── topics: []string           → 旧配置：监听的 Topic 列表（向后兼容）
+│                               └── handlers 为空时生效
+│
+├── concurrency: int           → 旧配置：Worker Pool 并发数（向后兼容）
+│                               └── handlers 为空时生效
 │
 ├── poll-interval: string      → Relay 主循环扫描间隔
 │                               └── scanAndDeliver 的 Ticker 周期
@@ -526,7 +604,26 @@ WorkerConfig (conf/conf.go)
                                 └── cleanupSent 每小时执行，分批删除
 ```
 
-### 8.3 Relay 三个定时任务的间隔计算
+### 8.3 配置降级优先级链
+
+```
+Engine.Start() 中的配置降级逻辑：
+
+并发数 (Concurrency):
+  Handler 配置值 → default-concurrency → 旧 concurrency → 常量默认值(1)
+
+缓冲大小 (BufferSize):
+  Handler 配置值 → default-buffer-size → 常量默认值(1000)
+
+示例（当前 config.yml）：
+  shop-order-events:   concurrency=20, buffer-size=2000  (显式配置)
+  shop-product-events: concurrency=10, buffer-size=1000  (显式配置)
+  若某 handler 未配置 concurrency，则使用 default-concurrency=10
+  若 default-concurrency 也未配置，则回退到旧 concurrency=10
+  若旧 concurrency 也未配置，则使用常量默认值 1
+```
+
+### 8.4 Relay 三个定时任务的间隔计算
 
 ```
 parseRelayConfig() 解析后的实际值:
@@ -551,13 +648,20 @@ parseRelayConfig() 解析后的实际值:
 cmd/worker/main.go
 │
 ├── conf/config.yml                              ← 配置定义
-├── conf/conf.go (WorkerConfig)                  ← 配置结构体
+├── conf/conf.go (WorkerConfig + HandlerConfig)  ← 配置结构体
+│   ├── WorkerConfig.handlers: []HandlerConfig   ← per-Handler 独立配置（新增）
+│   ├── WorkerConfig.default-concurrency          ← 全局默认并发数（新增）
+│   └── WorkerConfig.default-buffer-size          ← 全局默认缓冲大小（新增）
 │
 ├── internal/bootstrap/bootstrap.go              ← 基础组件初始化
 │   └── WithKafkaConsumer()                      ← 选择性初始化 Kafka ConsumerGroup
 │
 ├── internal/worker/engine.go                    ← Engine 生命周期管理
+│   ├── consumers: []*Consumer                   ← 多 Consumer 切片（改造后）
 │   ├── internal/worker/consumer.go              ← 双缓冲消费者
+│   │   ├── ConsumerConfig                       ← 单 Consumer 配置（新增）
+│   │   ├── NewConsumerWithConfig()              ← 新版 API（新增）
+│   │   ├── NewConsumer()                        ← 旧版 API（向后兼容）
 │   │   ├── internal/worker/handler.go           ← Event 结构体 + Handler 接口
 │   │   ├── internal/worker/registry.go          ← Handler 注册表 (topic→Handler)
 │   │   └── internal/worker/middleware.go        ← 中间件链 (Recovery/Logging/Timeout)
@@ -616,27 +720,28 @@ engine.Stop()
         │       ├── reclaim-lease ticker 退出
         │       └── cleanup-sent ticker 退出
         │
-        ├──▶ 2. consumer.Stop()
+        ├──▶ 2. 遍历所有 Consumer，逐个关闭
         │       │
-        │       ├── (a) cancel() → consumer ctx.Done()
-        │       │       → consumeLoop 退出循环
-        │       │       → ConsumeClaim 不再写入 tasks
+        │       │  for _, c := range e.consumers { c.Stop() }
         │       │
-        │       ├── (b) consumeWg.Wait()
-        │       │       → 等待 consumeLoop goroutine 完全退出
+        │       ├── Consumer A.Stop()  (订单)
+        │       │       ├── (a) cancel() → consumeLoop 退出
+        │       │       ├── (b) consumeWg.Wait() → 循环 goroutine 退出
+        │       │       ├── (c) close(tasks A) → 通知 Worker Pool
+        │       │       └── (d) workerWg.Wait() → 处理完剩余消息
         │       │
-        │       ├── (c) close(tasks)
-        │       │       → 通知 Worker Pool 不再有new消息
-        │       │
-        │       └── (d) workerWg.Wait()
-        │               → 每个 Worker 处理完 range tasks 中剩余消息
-        │               → 所有 Worker goroutine 退出
+        │       └── Consumer B.Stop()  (商品)
+        │               ├── (a) cancel() → consumeLoop 退出
+        │               ├── (b) consumeWg.Wait()
+        │               ├── (c) close(tasks B)
+        │               └── (d) workerWg.Wait()
         │
         ├──▶ 3. engine.cancel()
         │       → 取消 Engine 级别的 context
         │
-        └──▶ 4. consumer.group.Close()
+        └──▶ 4. consumers[0].group.Close()
                 → 关闭 sarama ConsumerGroup 底层连接
+                │  （所有 Consumer 共享同一个 group，只关闭一次）
                 │
                 ▼
         bootstrap.Shutdown()
@@ -651,82 +756,75 @@ engine.Stop()
                   程序退出 ✓
 ```
 
-**说明**：关闭流程严格保证有序：先停 Relay（停止产生新消息），再停 Consumer（停拉取 → 等循环退出 → 关 channel → 等 Worker 处理完剩余消息），最后关闭底层连接。`close(tasks)` 后 Worker 通过 `for event := range tasks` 自然退出，确保不丢失已拉取的消息。
+**说明**：关闭流程严格保证有序：先停 Relay（停止产生新消息），再遍历关闭所有 Consumer（停拉取 → 等循环退出 → 关 channel → 等 Worker 处理完剩余消息），最后关闭底层连接。每个 Consumer 的关闭流程与之前相同，确保不丢失已拉取的消息。所有 Consumer 共享同一个 sarama ConsumerGroup，只需关闭一次。
 
 ---
 
-## 十一、当前架构的局限与演进方向
+## 十一、架构演进与可优化点
 
-### 11.1 当前：全局共享 Worker Pool
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                                                              │
-│  shop-product-events ──┐                                    │
-│                        ├─→ tasks (1000) ─→ Worker Pool (10) │
-│  shop-order-events ────┘                                    │
-│                                                              │
-│  特点:                                                      │
-│  • 所有 topic 共享同一个 tasks channel                       │
-│  • 所有 topic 共享同一个 Worker Pool (concurrency=10)        │
-│  • Registry 按 topic 分发到不同 Handler                      │
-│                                                              │
-│  局限:                                                      │
-│  1. 无法为不同 topic 设置不同并发数                           │
-│     (商品事件可能需要 5 并发，订单事件可能需要 20 并发)        │
-│  2. 慢处理可能影响其他 topic                                 │
-│     (订单处理超时 → 占满 Worker → 商品消息积压)              │
-│  3. 无法独立监控每个 topic 的消费延迟和处理速率               │
-│  4. tasks channel 满时所有 topic 的 Poller 都被阻塞          │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 11.2 未来演进：per-Handler 独立 Pool
+### 11.1 架构演进：从全局共享到 per-Handler 独立
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                                                              │
-│  shop-product-events → tasks A (500)  → Pool A (5)          │
-│                                         └→ ProductHandler    │
+│  ✅ 已完成：per-Handler 独立 Consumer 架构                      │
 │                                                              │
-│  shop-order-events   → tasks B (2000) → Pool B (20)         │
+│  旧模式（全局共享，已淘汰）：                                  │
+│  shop-order-events ──┐                                    │
+│                      ├─→ tasks (1000) → Worker Pool (10)    │
+│  shop-product-events ─┘                                    │
+│                                                              │
+│  新模式（per-Handler 独立，当前实现）：                        │
+│  shop-order-events   → tasks A (2000) → Pool A (20)         │
 │                                         └→ OrderHandler      │
 │                                                              │
-│  优势:                                                      │
-│  1. 每个 topic 独立并发数，按需分配                           │
-│  2. 资源隔离，慢处理不影响其他 topic                          │
-│  3. 独立监控每个 topic 的消费延迟和处理速率                    │
-│  4. 可以为不同 topic 设置不同的中间件链                       │
-│  5. 可以为不同 topic 设置不同的背压阈值                       │
+│  shop-product-events → tasks B (1000) → Pool B (10)         │
+│                                         └→ ProductHandler    │
 │                                                              │
-│  改造方向:                                                   │
-│  • Consumer 内部按 topic 拆分为多个独立的子 Consumer           │
-│  • 每个子 Consumer 拥有自己的 tasks channel 和 Worker Pool    │
-│  • Engine 管理多个子 Consumer 的生命周期                      │
+│  已解决的局限：                                              │
+│  ✅ 每个 topic 独立并发数，按需分配                           │
+│  ✅ 资源隔离，慢处理不影响其他 topic                          │
+│  ✅ 独立监控每个 topic 的消费延迟和处理速率                    │
+│  ✅ 可以为不同 topic 设置不同的背压阈值                       │
+│                                                              │
+│  向后兼容保障：                                              │
+│  • 保留旧版 topics + concurrency 配置，handlers 为空时自动回退  │
+│  • 保留旧版 NewConsumer() API，内部委托给 NewConsumerWithConfig()│
+│  • 配置降级链：Handler级 → Default级 → 旧全局级 → 常量默认值    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 11.3 其他可优化点
+### 11.2 未来演进方向
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  1. 中间件实现                                                │
+│  1. 有序消费 (Key-Based Routing)                               │
+│     当前: HandlerConfig.ordered 已预留，但未实现                 │
+│     方向: 同 partition_key 的消息路由到同一个 Worker goroutine  │
+│           保证同一业务实体的事件按序处理                         │
+│                                                              │
+│  2. 中间件实现                                                │
 │     当前: RecoveryMiddleware / LoggingMiddleware 为 TODO 空壳 │
 │     方向: 补充实际的 panic 恢复、日志记录、超时控制逻辑        │
 │                                                              │
-│  2. Offset 提交策略                                          │
+│  3. Offset 提交策略                                          │
 │     当前: ConsumeClaim 中先 MarkMessage 再发送到 tasks        │
 │     风险: Worker 处理失败时 offset 已提交，消息丢失            │
 │     方向: 改为 Handler 处理成功后才 MarkMessage               │
 │                                                              │
-│  3. 监控指标                                                  │
+│  4. 监控指标                                                  │
 │     当前: 仅日志输出                                          │
 │     方向: 接入 Prometheus，暴露消费速率/延迟/错误率/队列深度   │
 │                                                              │
-│  4. 死信管理                                                  │
+│  5. 死信管理                                                  │
 │     当前: 死信写入 event_dead_letter 表                       │
 │     方向: 提供 CLI/Web UI 查看死信列表、手动重试               │
+│                                                              │
+│  6. 多 Handler 扩展                                          │
+│     当前: 单 Handler 模型（每个 Topic 对应一个 Handler）       │
+│     方向: Registry 中 handlers map 改为 []Handler，            │
+│           支持一个 Topic 对应多个 Handler 并行处理              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**说明**：当前架构采用全局共享 Worker Pool 的简单设计，适合项目初期快速验证。当业务增长、topic 增多、处理复杂度提升时，可演进为 per-Handler 独立 Pool 架构，实现资源隔离和精细化调优。
+**说明**：per-Handler 独立 Consumer 架构已实现，解决了旧版全局共享 Worker Pool 的核心局限（资源隔离、独立并发配置、独立背压阈值）。架构已预留有序消费（`ordered` 字段）和多 Handler 扩展能力，未来可根据业务需求逐步演进。

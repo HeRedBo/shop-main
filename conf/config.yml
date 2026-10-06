@@ -73,15 +73,34 @@ zap:
 worker:
   enabled: true
   group-id: "shop-worker"
+
+  # ===== 方式一：per-Handler 独立配置（推荐） =====
+  handlers:
+    - topic: "shop-order-events"
+      concurrency: 20
+      ordered: false
+      buffer-size: 2000
+    - topic: "shop-product-events"
+      concurrency: 10
+      ordered: false
+      buffer-size: 1000
+
+  # ===== 方式二：全局配置（向后兼容，handlers 为空时生效） =====
   topics:
     - "shop-product-events"
     - "shop-order-events"
   concurrency: 10
+
+  # 全局默认值（handlers 中未指定的字段使用此默认值）
+  default-concurrency: 10
+  default-buffer-size: 1000
+
   poll-interval: "2s"
   max-retries: 5
   retry-base-delay: "1s"
   relay-batch-size: 100
   relay-lease-timeout: "60s"
+  handler-timeout: "30s"    # 单条消息处理超时时间
 
 wechat:
   app_id:

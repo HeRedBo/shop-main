@@ -81,6 +81,14 @@ type Kafka struct {
 	Hosts []string `mapstructure:"hosts" yaml:"hosts"`
 }
 
+// HandlerConfig 单个 Handler 的配置
+type HandlerConfig struct {
+	Topic       string `mapstructure:"topic" yaml:"topic"`              // 监听的 Topic
+	Concurrency int    `mapstructure:"concurrency" yaml:"concurrency"`   // 该 Handler 的 Worker Pool 并发数
+	Ordered     bool   `mapstructure:"ordered" yaml:"ordered"`           // 是否有序消费（同 key 同 worker，预留字段）
+	BufferSize  int    `mapstructure:"buffer-size" yaml:"buffer-size"`   // tasks channel 缓冲大小
+}
+
 type WorkerConfig struct {
 	Enabled           bool     `mapstructure:"enabled" yaml:"enabled"`
 	GroupId           string   `mapstructure:"group-id" yaml:"group-id"`
@@ -92,6 +100,16 @@ type WorkerConfig struct {
 	RelayBatchSize    int      `mapstructure:"relay-batch-size" yaml:"relay-batch-size"`
 	RelayLeaseTimeout string   `mapstructure:"relay-lease-timeout" yaml:"relay-lease-timeout"`
 	RelayCleanupDays  int      `mapstructure:"relay-cleanup-days" yaml:"relay-cleanup-days"` // 清理多少天前的 SENT 记录
+
+	// per-Handler 独立配置（推荐方式）
+	Handlers []HandlerConfig `mapstructure:"handlers" yaml:"handlers"`
+
+	// 消费超时时间（默认 30s）
+	HandlerTimeout string `mapstructure:"handler-timeout" yaml:"handler-timeout"`
+
+	// 全局默认值（handlers 中未指定的字段使用此默认值）
+	DefaultConcurrency int `mapstructure:"default-concurrency" yaml:"default-concurrency"`
+	DefaultBufferSize  int `mapstructure:"default-buffer-size" yaml:"default-buffer-size"`
 }
 
 type Wechat struct {

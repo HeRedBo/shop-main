@@ -9,7 +9,7 @@ import (
 // key 为 topic 名称，value 为对应的 Handler
 type Registry struct {
 	mu       sync.RWMutex
-	handlers map[string]Handler // key: topic 或 event_type
+	handlers map[string]Handler // key: topic
 }
 
 // NewRegistry 创建一个新的 Handler 注册表

@@ -6,16 +6,15 @@ import (
 )
 
 // RegisterAll 注册所有事件处理器到 Worker Engine
-// 按 topic 注册对应的业务 Handler，替代 DemoHandler
+// 按 topic 注册对应的业务 Handler
 func RegisterAll(engine *worker.Engine) {
 	registry := engine.GetRegistry()
 
-	productHandler := NewProductHandler()
-	orderHandler := NewOrderHandler()
+	// 注册商品事件 Handler
+	registry.Register(worker.TopicProductEvents, NewProductHandler())
 
-	// 按 topic 注册对应的 Handler
-	registry.Register(worker.TopicProductEvents, productHandler)
-	registry.Register(worker.TopicOrderEvents, orderHandler)
+	// 注册订单事件 Handler
+	registry.Register(worker.TopicOrderEvents, NewOrderHandler())
 
 	global.LOG.Infof("[Worker] 事件处理器注册完成，topics: [%s, %s]", worker.TopicProductEvents, worker.TopicOrderEvents)
 }
