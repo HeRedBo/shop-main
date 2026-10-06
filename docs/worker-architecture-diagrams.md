@@ -166,7 +166,7 @@ cmd/worker/main.go
 
 **说明**：每个 topic 对应一个独立的 Consumer 实例，拥有自己的 tasks channel 和 Worker Pool。慢处理不会影响其他 topic 的消费。所有 Consumer 共享同一个 sarama ConsumerGroup，通过 RoundRobin 分区策略分配 partition。
 
-### 3.2 单个 Consumer 内部双缓冲细节
+### 3.2 单个 Consumer 内部双缓冲细节（无序模式 ordered=false）
 
 ```
                     Kafka Cluster
@@ -217,20 +217,96 @@ cmd/worker/main.go
     │                                      │
     │  1. registry.GetHandler(event.Topic) │  ← 按 topic 查找
     │  2. Chain(handler, middlewares...)   │  ← 中间件包装
-    │  3. wrappedHandler.Handle(ctx,event) │  ← 执行处理
+    │  3. context.WithTimeout(timeout)     │  ← 超时控制
+    │  4. wrappedHandler.Handle(ctx,event) │  ← 执行处理
     └──────────────────────────────────────┘
                          │
                          ▼
     ┌──────────────────────────────────────┐
     │         Middleware Chain             │
     │                                      │
-    │  RecoveryMiddleware                  │  ← panic 恢复 (TODO)
-    │    → LoggingMiddleware               │  ← 日志记录 (TODO)
+    │  RecoveryMiddleware                  │  ← panic 恢复
+    │    → LoggingMiddleware               │  ← 日志记录
     │      → Handler.Handle()              │  ← 实际业务处理
     └──────────────────────────────────────┘
 ```
 
-**说明**：双缓冲架构将消息拉取（ConsumeClaim/Poller）和消息处理（Worker Pool）分离为独立的 goroutine 池。慢处理不会阻塞 Kafka 拉取，避免 rebalance。`tasks` channel 设置有界缓冲（默认 1000，可通过配置调整），满时自动背压，天然限流。每个 Worker goroutine 顶层有 `defer recover()` 防止 panic 导致 goroutine 泄漏。
+**说明**：双缓冲架构将消息拉取（ConsumeClaim/Poller）和消息处理（Worker Pool）分离为独立的 goroutine 池。慢处理不会阻塞 Kafka 拉取，避免 rebalance。`tasks` channel 设置有界缓冲（默认 1000，可通过配置调整），满时自动背压，天然限流。每个 Worker goroutine 顶层有 `defer recover()` 防止 panic 导致 goroutine 泄漏。`processEvent` 通过 `context.WithTimeout` 为每条消息设置处理超时（默认 30s，可通过 `handler-timeout` 配置），防止慢处理占满 Worker 槽位。
+
+### 3.3 有序消费模式（Key-Based Routing, ordered=true）
+
+```
+                    Kafka Cluster
+                         │
+                    ┌────▼────┐
+                    │Consumer │
+                    │ Group   │
+                    └────┬────┘
+                         │
+              ┌──────────▼──────────┐
+              │    consumeLoop      │
+              └──────────┬──────────┘
+                         │
+          ┌──────────────▼──────────────┐
+          │       ConsumeClaim          │
+          │                             │
+          │  构造 Event                 │
+          │  key = event.Key            │
+          │  idx = FNV-1a(key) % N      │  ← 哈希路由
+          │  orderedChs[idx] <- event   │
+          └──────────────┬──────────────┘
+                         │
+          ┌──────────────┼──────────────┐
+          │              │              │
+    ┌─────▼─────┐  ┌────▼──────┐  ┌───▼───────┐
+    │orderedCh  │  │orderedCh  │  │orderedCh  │
+    │  [0]      │  │  [1]      │  │  [N-1]    │
+    │(buffer    │  │(buffer    │  │(buffer    │
+    │ 1000)     │  │ 1000)     │  │ 1000)     │
+    └─────┬─────┘  └────┬──────┘  └───┬───────┘
+          │              │              │
+          ▼              ▼              ▼
+    ┌──────────┐  ┌──────────┐  ┌──────────┐
+    │Ordered   │  │Ordered   │  │Ordered   │
+    │Worker-0  │  │Worker-1  │  │Worker-N  │
+    │          │  │          │  │          │
+    │for event │  │for event │  │for event │
+    │:= range  │  │:= range  │  │:= range  │
+    │orderedCh │  │orderedCh │  │orderedCh │
+    │  [0]     │  │  [1]     │  │  [N-1]   │
+    └──────────┘  └──────────┘  └──────────┘
+
+    同 key → FNV-1a hash → 同一 orderedCh → 同一 Worker
+    保证同 key 消息严格有序处理
+```
+
+**说明**：当 `ordered=true` 时，Consumer 不再使用共享的 `tasks` channel，而是为每个 Worker 创建独立的 `orderedChs[i]` channel。消息到达时，通过 `FNV-1a` 哈希算法对 `event.Key` 计算路由目标：`idx = FNV-1a(key) % concurrency`，保证相同 key 的消息始终路由到同一个 Worker goroutine，实现严格有序消费。每个 orderedCh 同样有独立的缓冲大小（与 `buffer-size` 配置一致）。
+
+### 3.4 无序模式 vs 有序模式对比
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                                                                │
+│  无序模式 (ordered=false, 默认):                                │
+│  ┌─────────┐     ┌────────────┐     ┌─────────────────────┐   │
+│  │Consume  │────▶│ tasks (共享)│────▶│ Worker Pool (N个)   │   │
+│  │Claim    │     │ buffer=1000│     │ 竞争消费，无序保证   │   │
+│  └─────────┘     └────────────┘     └─────────────────────┘   │
+│                                                                │
+│  特点: 高吞吐，所有 Worker 竞争消费，消息处理顺序不确定          │
+│                                                                │
+│  有序模式 (ordered=true):                                      │
+│  ┌─────────┐     ┌────────────────────────────────────────┐   │
+│  │Consume  │     │  orderedCh[0] ──▶ OrderedWorker-0      │   │
+│  │Claim    │────▶│  orderedCh[1] ──▶ OrderedWorker-1      │   │
+│  │ FNV-1a  │     │  orderedCh[N] ──▶ OrderedWorker-N      │   │
+│  │ hash路由│     │  (每个 Worker 有独立 channel)            │   │
+│  └─────────┘     └────────────────────────────────────────┘   │
+│                                                                │
+│  特点: 同 key 严格有序，并发度受 key 分布影响                   │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -278,9 +354,24 @@ HTTP 请求
                  ┌─────────────────────▼─────────────────────┐
                  │              Relay 模块                     │
                  │                                           │
-                 │  Ticker(2s) ──▶ scanAndDeliver()          │
-                 │       │                                   │
-                 │       ▼                                   │
+                 │  ┌─ 通知驱动 ──────────────────────────┐  │
+                 │  │ Redis SUBSCRIBE("outbox:new")       │  │
+                 │  │   → 收到通知 → 立即 scanAndDeliver() │  │
+                 │  └─────────────────────────────────────┘  │
+                 │                                           │
+                 │  ┌─ Ticker 兜底 (10s) ─────────────────┐  │
+                 │  │ Ticker(10s) ──▶ scanAndDeliver()     │  │
+                 │  └─────────────────────────────────────┘  │
+                 │                                           │
+                 │  ┌─ 租约回收 (30s) ────────────────────┐  │
+                 │  │ reclaimLease()                       │  │
+                 │  └─────────────────────────────────────┘  │
+                 │                                           │
+                 │  ┌─ 定期清理 (1h) ─────────────────────┐  │
+                 │  │ cleanupSent()                        │  │
+                 │  └─────────────────────────────────────┘  │
+                 │                                           │
+                 │  投递流程:                                │
                  │  原子抢占: UPDATE status='SENDING'         │
                  │           WHERE id=? AND status='WAIT'    │
                  │       │                                   │
@@ -325,7 +416,7 @@ HTTP 请求
                  └──────────────────────────────────────────┘
 ```
 
-**说明**：完整的数据流从 HTTP 请求开始，经过 Controller → Service → GORM 事务。在事务中，Observer 回调自动写入 `event_outbox` 记录，保证业务数据与事件记录的原子性。Relay 定时扫描 outbox 表投递到 Kafka，Worker Consumer 消费消息后交给 Handler 处理，Handler 通过双层幂等保障（查询 + 唯一约束）确保不重复处理。
+**说明**：完整的数据流从 HTTP 请求开始，经过 Controller → Service → GORM 事务。在事务中，Observer 回调自动写入 `event_outbox` 记录，保证业务数据与事件记录的原子性。事务提交后，`WriteOutbox` 通过 goroutine 异步执行 `Redis PUBLISH("outbox:new")` 通知 Relay。Relay 采用**通知驱动 + Ticker 兜底**双触发机制：Redis SUBSCRIBE 收到通知后立即扫描投递，Ticker 每 10 秒兜底扫描保证最终一致性。Worker Consumer 消费消息后交给 Handler 处理，Handler 通过双层幂等保障（查询 + 唯一约束）确保不重复处理。
 
 ---
 
@@ -487,6 +578,9 @@ HTTP 请求
                    │  生成 UUID event_id               │
                    │  INSERT event_outbox              │
                    │  status = 'WAIT'                  │
+                   │                                   │
+                   │  go notifyRelay(event_id)         │  ← 异步 Redis PUBLISH
+                   │  → PUBLISH("outbox:new", event_id)│    通知 Relay 立即扫描
                    └──────────────────────────────────┘
                                      │
                               与业务操作同事务提交
@@ -517,7 +611,7 @@ observers/register.go → RegisterAll(global.Db)
 └── SysUserObserver  → 观察表: sys_user
 ```
 
-**说明**：Observer 通过 GORM Plugin 机制注册回调，在 `gorm:create`/`gorm:update`/`gorm:delete` 之后自动触发。Observer 回调接收同一个 `tx` 事务对象，调用 `WriteOutbox()` 将事件记录写入 `event_outbox` 表，保证业务数据与事件记录的原子性。订单 Observer 根据 `status` 字段映射不同的事件类型。
+**说明**：Observer 通过 GORM Plugin 机制注册回调，在 `gorm:create`/`gorm:update`/`gorm:delete` 之后自动触发。Observer 回调接收同一个 `tx` 事务对象，调用 `WriteOutbox()` 将事件记录写入 `event_outbox` 表，保证业务数据与事件记录的原子性。事务提交后，`WriteOutbox` 通过 goroutine 异步执行 `Redis PUBLISH("outbox:new")` 通知 Relay 立即扫描投递。订单 Observer 根据 `status` 字段映射不同的事件类型。
 
 ---
 
@@ -534,7 +628,7 @@ worker:
   handlers:
     - topic: "shop-order-events"
       concurrency: 20
-      ordered: false
+      ordered: false           # 是否有序消费（同 key 同 worker）
       buffer-size: 2000
     - topic: "shop-product-events"
       concurrency: 10
@@ -556,6 +650,7 @@ worker:
   retry-base-delay: "1s"
   relay-batch-size: 100
   relay-lease-timeout: "60s"
+  handler-timeout: "30s"      # 单条消息处理超时时间
 ```
 
 ### 8.2 配置项层级与说明
@@ -570,8 +665,10 @@ WorkerConfig (conf/conf.go)
 ├── handlers: []HandlerConfig  → per-Handler 独立配置（推荐方式）
 │   ├── [0] topic: string      → 监听的 Topic
 │   │   [0] concurrency: int   → 该 Handler 的 Worker Pool 并发数
-│   │   [0] ordered: bool      → 是否有序消费（同 key 同 worker，预留字段）
-│   │   [0] buffer-size: int   → tasks channel 缓冲大小
+│   │   [0] ordered: bool      → 是否有序消费（同 key 同 worker，已实现）
+│   │   │                         true: FNV-1a hash 路由，每个 Worker 独立 channel
+│   │   │                         false: 共享 tasks channel，竞争消费
+│   │   [0] buffer-size: int   → tasks/orderedCh channel 缓冲大小
 │   └── [1] ...                → 更多 Handler 配置
 │
 ├── default-concurrency: int   → 全局默认并发数（handlers 中未指定时使用）
@@ -584,8 +681,10 @@ WorkerConfig (conf/conf.go)
 ├── concurrency: int           → 旧配置：Worker Pool 并发数（向后兼容）
 │                               └── handlers 为空时生效
 │
-├── poll-interval: string      → Relay 主循环扫描间隔
-│                               └── scanAndDeliver 的 Ticker 周期
+├── handler-timeout: string    → 单条消息处理超时时间
+│                               └── 默认 30s，processEvent 中 context.WithTimeout
+│
+├── poll-interval: string      → Relay 主循环扫描间隔（已用于 Ticker 兜底计算）
 │
 ├── max-retries: int           → 最大重试次数
 │                               └── 超过后移入 event_dead_letter
@@ -623,22 +722,22 @@ Engine.Start() 中的配置降级逻辑：
   若旧 concurrency 也未配置，则使用常量默认值 1
 ```
 
-### 8.4 Relay 三个定时任务的间隔计算
+### 8.4 Relay 四个定时任务的间隔配置
 
 ```
-parseRelayConfig() 解析后的实际值:
+Relay.Start() 中的实际配置:
 
-┌─────────────────┬──────────────────┬──────────────────────────────┐
-│ 定时任务         │ 间隔             │ 计算逻辑                      │
-├─────────────────┼──────────────────┼──────────────────────────────┤
-│ scan-deliver    │ 2s               │ = poll-interval               │
-│ reclaim-lease   │ max(2s×2, 10s)   │ = poll-interval × 2, 最小 10s │
-│                 │ = 10s            │                              │
-│ cleanup-sent    │ 1h (固定)         │ 硬编码 1 小时                  │
-└─────────────────┴──────────────────┴──────────────────────────────┘
+┌─────────────────┬──────────────────┬──────────────────────────────────────┐
+│ 定时任务         │ 间隔             │ 触发方式                              │
+├─────────────────┼──────────────────┼──────────────────────────────────────┤
+│ scan-deliver    │ 10s (Ticker 兜底) │ Redis 通知立即触发 + Ticker 10s 兜底 │
+│ reclaim-lease   │ 30s (固定)        │ time.NewTicker(30s)                  │
+│ cleanup-sent    │ 1h (固定)         │ time.NewTicker(1h)                   │
+│ subscribe-notify│ 持续监听          │ Redis SUBSCRIBE 长连接                │
+└─────────────────┴──────────────────┴──────────────────────────────────────┘
 ```
 
-**说明**：配置通过 `mapstructure` 标签映射到 `WorkerConfig` 结构体。`parseRelayConfig()` 将字符串类型的时间配置解析为 `time.Duration`，并为每个参数设置合理的默认值。
+**说明**：配置通过 `mapstructure` 标签映射到 `WorkerConfig` 结构体。Relay 采用通知驱动 + Ticker 兜底模式，scanLoop 监听 Redis 通知 channel 和 10s Ticker，任一触发即执行 `scanAndDeliver()`。租约回收和定期清理使用硬编码间隔（30s 和 1h）。`handler-timeout` 控制 `processEvent` 中的 `context.WithTimeout` 超时时间。
 
 ---
 
@@ -658,20 +757,25 @@ cmd/worker/main.go
 │
 ├── internal/worker/engine.go                    ← Engine 生命周期管理
 │   ├── consumers: []*Consumer                   ← 多 Consumer 切片（改造后）
-│   ├── internal/worker/consumer.go              ← 双缓冲消费者
-│   │   ├── ConsumerConfig                       ← 单 Consumer 配置（新增）
-│   │   ├── NewConsumerWithConfig()              ← 新版 API（新增）
+│   ├── internal/worker/consumer.go              ← 双缓冲消费者 + 有序消费 + 超时控制
+│   │   ├── ConsumerConfig                       ← 单 Consumer 配置（含 Ordered/HandlerTimeout）
+│   │   ├── NewConsumerWithConfig()              ← 新版 API
 │   │   ├── NewConsumer()                        ← 旧版 API（向后兼容）
+│   │   ├── routeKey()                           ← FNV-1a 哈希路由（有序模式）
+│   │   ├── processEvent()                       ← 消息处理 + context.WithTimeout 超时控制
 │   │   ├── internal/worker/handler.go           ← Event 结构体 + Handler 接口
 │   │   ├── internal/worker/registry.go          ← Handler 注册表 (topic→Handler)
 │   │   └── internal/worker/middleware.go        ← 中间件链 (Recovery/Logging/Timeout)
 │   │
-│   ├── internal/worker/relay.go                 ← Outbox 扫描投递器
+│   ├── internal/worker/relay.go                 ← Outbox 扫描投递器 + Redis Pub/Sub 通知
+│   │   ├── subscribeNotify()                    ← Redis SUBSCRIBE 监听
+│   │   ├── scanLoop()                           ← 通知 + Ticker 双触发扫描循环
 │   │   ├── internal/models/event_outbox.go      ← EventOutbox 模型 + 状态常量
 │   │   ├── internal/models/event_dead_letter.go ← EventDeadLetter 模型
 │   │   └── pkg/mq (KafkaSyncProducer)          ← Kafka 生产者（投递用）
 │   │
-│   └── internal/worker/outbox.go                ← WriteOutbox 工具函数
+│   └── internal/worker/outbox.go                ← WriteOutbox 工具函数 + Redis 通知
+│       ├── notifyRelay()                        ← PUBLISH("outbox:new") 异步通知 Relay
 │       └── internal/models/event_outbox.go      ← EventOutbox 模型
 │
 ├── internal/workers/register.go                 ← RegisterAll 注册入口
@@ -679,7 +783,7 @@ cmd/worker/main.go
 │   ├── internal/workers/order_handler.go        ← OrderHandler 实现
 │   └── internal/models/processed_event.go       ← ProcessedEvent 幂等模型
 │
-└── pkg/global/global.go                         ← 全局变量 (Db, LOG, CONFIG, KafkaConsumerGroup)
+└── pkg/global/global.go                         ← 全局变量 (Db, LOG, CONFIG, KafkaConsumerGroup, RedisClient)
 ```
 
 ### Observer 侧依赖（事件产生端）
@@ -716,7 +820,8 @@ engine.Stop()
         │
         ├──▶ 1. relay.Stop()
         │       ├── cancel() → relay ctx.Done()
-        │       ├── scan-deliver ticker 退出
+        │       ├── subscribeNotify 退出（Redis SUBSCRIBE 连接关闭）
+        │       ├── scanLoop 退出（Ticker + notify channel）
         │       ├── reclaim-lease ticker 退出
         │       └── cleanup-sent ticker 退出
         │
@@ -727,13 +832,15 @@ engine.Stop()
         │       ├── Consumer A.Stop()  (订单)
         │       │       ├── (a) cancel() → consumeLoop 退出
         │       │       ├── (b) consumeWg.Wait() → 循环 goroutine 退出
-        │       │       ├── (c) close(tasks A) → 通知 Worker Pool
+        │       │       ├── (c) 关闭 channel → 通知 Worker Pool
+        │       │       │       无序模式: close(tasks)
+        │       │       │       有序模式: close(orderedChs[0..N])
         │       │       └── (d) workerWg.Wait() → 处理完剩余消息
         │       │
         │       └── Consumer B.Stop()  (商品)
         │               ├── (a) cancel() → consumeLoop 退出
         │               ├── (b) consumeWg.Wait()
-        │               ├── (c) close(tasks B)
+        │               ├── (c) 关闭 channel（无序: tasks / 有序: orderedChs）
         │               └── (d) workerWg.Wait()
         │
         ├──▶ 3. engine.cancel()
@@ -756,7 +863,7 @@ engine.Stop()
                   程序退出 ✓
 ```
 
-**说明**：关闭流程严格保证有序：先停 Relay（停止产生新消息），再遍历关闭所有 Consumer（停拉取 → 等循环退出 → 关 channel → 等 Worker 处理完剩余消息），最后关闭底层连接。每个 Consumer 的关闭流程与之前相同，确保不丢失已拉取的消息。所有 Consumer 共享同一个 sarama ConsumerGroup，只需关闭一次。
+**说明**：关闭流程严格保证有序：先停 Relay（停止扫描新 Outbox 记录，关闭 Redis SUBSCRIBE 连接），再遍历关闭所有 Consumer（停拉取 → 等循环退出 → 关 channel → 等 Worker 处理完剩余消息），最后关闭底层连接。每个 Consumer 的关闭流程根据模式不同关闭不同的 channel：无序模式关闭 `tasks`，有序模式关闭所有 `orderedChs[0..N]`。所有 Consumer 共享同一个 sarama ConsumerGroup，只需关闭一次。
 
 ---
 
@@ -794,37 +901,44 @@ engine.Stop()
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 11.2 未来演进方向
+### 11.2 已完成的优化项
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  1. 有序消费 (Key-Based Routing)                               │
-│     当前: HandlerConfig.ordered 已预留，但未实现                 │
-│     方向: 同 partition_key 的消息路由到同一个 Worker goroutine  │
-│           保证同一业务实体的事件按序处理                         │
-│                                                              │
-│  2. 中间件实现                                                │
-│     当前: RecoveryMiddleware / LoggingMiddleware 为 TODO 空壳 │
-│     方向: 补充实际的 panic 恢复、日志记录、超时控制逻辑        │
-│                                                              │
-│  3. Offset 提交策略                                          │
+│  ✅ 已完成：per-Handler 独立 Consumer 架构                      │
+│  ✅ 已完成：有序消费 (Key-Based Routing, FNV-1a hash)           │
+│  ✅ 已完成：消息处理超时控制 (context.WithTimeout)              │
+│  ✅ 已完成：Relay 通知驱动优化 (Redis Pub/Sub + Ticker 兜底)  │
+│  ✅ 已完成：Middleware 链 (Recovery + Logging)                  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 11.3 未来演进方向
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  1. Offset 提交策略优化                                        │
 │     当前: ConsumeClaim 中先 MarkMessage 再发送到 tasks        │
 │     风险: Worker 处理失败时 offset 已提交，消息丢失            │
 │     方向: 改为 Handler 处理成功后才 MarkMessage               │
 │                                                              │
-│  4. 监控指标                                                  │
+│  2. 监控指标                                                  │
 │     当前: 仅日志输出                                          │
 │     方向: 接入 Prometheus，暴露消费速率/延迟/错误率/队列深度   │
 │                                                              │
-│  5. 死信管理                                                  │
+│  3. 死信管理                                                  │
 │     当前: 死信写入 event_dead_letter 表                       │
 │     方向: 提供 CLI/Web UI 查看死信列表、手动重试               │
 │                                                              │
-│  6. 多 Handler 扩展                                          │
+│  4. 多 Handler 扩展                                          │
 │     当前: 单 Handler 模型（每个 Topic 对应一个 Handler）       │
 │     方向: Registry 中 handlers map 改为 []Handler，            │
 │           支持一个 Topic 对应多个 Handler 并行处理              │
+│                                                              │
+│  5. 优先级队列支持                                            │
+│     当前: 所有事件平等处理                                    │
+│     方向: 核心事件（支付/订单）优先于低优先级事件（商品更新） │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**说明**：per-Handler 独立 Consumer 架构已实现，解决了旧版全局共享 Worker Pool 的核心局限（资源隔离、独立并发配置、独立背压阈值）。架构已预留有序消费（`ordered` 字段）和多 Handler 扩展能力，未来可根据业务需求逐步演进。
+**说明**：per-Handler 独立 Consumer 架构、有序消费、超时控制、Relay 通知驱动优化均已完成。架构已具备完善的消息处理保障机制，未来可根据业务需求在 Offset 提交策略、监控指标、死信管理等方面继续演进。

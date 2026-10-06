@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/IBM/sarama"
 	"github.com/fsnotify/fsnotify"
+	"github.com/go-redis/redis/v7"
 	"github.com/silenceper/wechat/v2/officialaccount"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
@@ -18,6 +19,9 @@ var (
 	CONFIG             conf.Config
 	WechatOfficial     *officialaccount.OfficialAccount
 	KafkaConsumerGroup sarama.ConsumerGroup
+
+	// RedisClient 独立 Redis 客户端（用于 Pub/Sub 等 cache 封装层不支持的功能）
+	RedisClient *redis.Client
 )
 
 // GetLogger 获取指定业务模块的 logger

@@ -190,6 +190,13 @@ func Shutdown() {
 
 	// 关闭 Redis（仅当已初始化时）
 	if componentFlags.redis {
+		// 关闭 Pub/Sub 专用客户端
+		if global.RedisClient != nil {
+			if err := global.RedisClient.Close(); err != nil {
+				global.LOG.Errorf("redis pub/sub client close error: %v", err)
+			}
+		}
+		// 关闭 cache 封装层客户端
 		if r := cache.GetRedisClient(cache.DefaultRedisClient); r != nil {
 			if err := r.Close(); err != nil {
 				global.LOG.Error("redis close error", err, "client", cache.DefaultRedisClient)
@@ -220,6 +227,17 @@ func initRedis() {
 		panic(err)
 	}
 	componentFlags.redis = true
+
+	// 创建独立 Redis 客户端用于 Pub/Sub（cache 封装层不支持 Subscribe/Publish）
+	global.RedisClient = redis.NewClient(&redis.Options{
+		Addr:     global.CONFIG.Redis.Host,
+		Password: global.CONFIG.Redis.Password,
+	})
+	if err := global.RedisClient.Ping().Err(); err != nil {
+		global.LOG.Errorf("[bootstrap] Redis Pub/Sub 客户端连接失败: %v", err)
+	} else {
+		global.LOG.Info("[bootstrap] Redis Pub/Sub 客户端已连接")
+	}
 }
 
 // initMySQL 初始化 MySQL 连接（含独立 SQL 日志）

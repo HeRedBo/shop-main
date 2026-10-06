@@ -941,3 +941,268 @@ Outbox Relay 每轮扫描后等待下一个 tick，健康检查用 `time.Ticker`
 - `runtime.NumGoroutine()` 监控，异常增长时告警
 - `goleak` 在测试阶段检测泄漏
 - 所有 goroutine 必须有退出机制
+
+---
+
+## 十二、Relay 通知驱动优化
+
+### 12.1 背景：纯轮询的性能问题
+
+在原始架构中，Relay 模块通过 `time.Ticker` 每 2 秒扫描一次 `event_outbox` 表（`status='WAIT'`），这种纯轮询模式存在两个核心问题：
+
+**问题一：事件投递延迟**
+
+Observer 写入 outbox 记录后，最多需要等待 2 秒才能被 Relay 扫描并投递到 Kafka。对于实时性要求较高的业务场景（如订单状态变更通知），2 秒延迟可能不可接受。
+
+**问题二：无效 DB 查询浪费**
+
+在业务低峰期（如夜间），outbox 表可能长时间没有新记录，但 Relay 仍然每 2 秒执行一次 `SELECT` 查询，返回空结果。假设 90% 的时间是空闲的，则 90% 的查询是无效的。
+
+```
+纯轮询模式的问题：
+
+时间线: ──0s───1s───2s───3s───4s───5s───...
+            │        │        │
+         查询(空)  查询(空)  查询(空)    ← 大量无效查询
+            │        │
+         写入1条   写入1条                ← 写入后仍需等待下次扫描
+
+延迟: 写入后最多等待 2s 才被投递
+DB QPS: 0.5 QPS (每 2s 一次)，空闲时 100% 返回空结果
+```
+
+### 12.2 方案：Redis Pub/Sub 通知 + Ticker 兜底
+
+将 Relay 从纯轮询模式升级为“通知驱动 + Ticker 兜底”的双触发机制：
+
+- **通知驱动**：Observer 写 outbox 后，通过 Redis PUBLISH 发送通知，Relay 通过 Redis SUBSCRIBE 监听并立即扫描投递
+- **Ticker 兜底**：保留 Ticker 定时扫描，但间隔从 2s 放宽到 10s，作为通知机制的兜底保障
+
+```
+通知驱动模式：
+
+Observer (HTTP Server 进程)          Relay (Worker 进程)
+         │                                    │
+         │  1. INSERT event_outbox (WAIT)    │
+         │  (与业务同事务)                     │
+         │                                    │
+         │  2. 事务提交 ✓                      │
+         │                                    │
+         │  3. go notifyRelay(event_id)       │
+         │     └─▶ Redis PUBLISH              │
+         │         ("outbox:new", event_id)   │
+         │                                    │
+         │         Redis Channel              │
+         │              │                     │
+         │              └──────────────▶ 4. SUBSCRIBE 收到通知
+         │                                    │
+         │                                    │  5. 立即 scanAndDeliver()
+         │                                    │     → 查询 WAIT 记录
+         │                                    │     → 投递到 Kafka
+         │                                    │     → 更新状态为 SENT
+         │                                    │
+         │                              ┌─────┴─────┐
+         │                              │ Ticker 10s │ ← 兜底：即使 Redis
+         │                              │  定时扫描  │   通知失败也能投递
+         │                              └─────┬─────┘
+         │                                    │
+```
+
+### 12.3 实现细节
+
+#### 12.3.1 Observer 侧：WriteOutbox 异步通知
+
+在 `internal/worker/outbox.go` 中，`WriteOutbox` 写入成功后，通过 goroutine 异步执行 Redis PUBLISH：
+
+```go
+// WriteOutbox 写入事务发件箱
+func WriteOutbox(tx *gorm.DB, aggregateId, eventType, topic, partitionKey string, payload interface{}) error {
+    // ... 构造 EventOutbox 记录 ...
+
+    if err := tx.Create(&outbox).Error; err != nil {
+        return err
+    }
+
+    // Redis PUBLISH 通知 Relay 立即扫描投递（goroutine 异步执行，不阻塞业务事务）
+    // 失败不影响主流程，Ticker 兜底保证最终一致
+    go notifyRelay(outbox.EventId)
+
+    return nil
+}
+
+// notifyRelay 通过 Redis Pub/Sub 通知 Relay 有新 outbox 记录
+func notifyRelay(eventId string) {
+    if global.RedisClient == nil {
+        return
+    }
+    if err := global.RedisClient.Publish(outboxNotifyChannel, eventId).Err(); err != nil {
+        global.LOG.Warnf("[outbox] Redis 通知失败 event_id=%s: %v", eventId, err)
+        // 不影响主流程，Relay 的 Ticker 兜底会处理
+    }
+}
+```
+
+关键设计点：
+
+- **异步执行**：`go notifyRelay()` 在独立 goroutine 中执行，不阻塞业务事务的返回
+- **失败安全**：PUBLISH 失败仅记录 warn 日志，不影响业务事务（事务已提交）
+- **Redis 独立连接**：使用独立的 `global.RedisClient`（`*redis.Client`），而非 `cache.Redis` 封装层（后者不暴露 Pub/Sub 方法）
+
+#### 12.3.2 Relay 侧：SUBSCRIBE + scanLoop 双触发
+
+在 `internal/worker/relay.go` 中，Relay 启动时同时启动 Redis SUBSCRIBE 监听和 scanLoop 扫描循环：
+
+```go
+// outboxNotifyChannel Redis Pub/Sub 频道名
+const outboxNotifyChannel = "outbox:new"
+
+type Relay struct {
+    ctx    context.Context
+    cancel context.CancelFunc
+    config WorkerRelayConfig
+    notify chan struct{} // 内部通知 channel，收到 Redis 通知后触发立即扫描
+}
+
+func (r *Relay) Start() {
+    // 1. 启动 Redis SUBSCRIBE 监听
+    go r.subscribeNotify()
+
+    // 2. 主循环：Ticker 兜底（10s）+ 通知触发
+    go r.scanLoop()
+
+    // 3. 租约回收（30s）
+    go r.loop("reclaim-lease", 30*time.Second, r.reclaimLease)
+
+    // 4. 定期清理（1h）
+    go r.loop("cleanup-sent", 1*time.Hour, r.cleanupSent)
+}
+```
+
+`subscribeNotify` 监听 Redis 频道，收到通知后非阻塞写入内部 `notify` channel：
+
+```go
+func (r *Relay) subscribeNotify() {
+    if global.RedisClient == nil {
+        global.LOG.Warn("[relay] Redis 客户端未初始化，仅使用 Ticker 兜底")
+        return
+    }
+
+    pubsub := global.RedisClient.Subscribe(outboxNotifyChannel)
+    defer pubsub.Close()
+
+    ch := pubsub.Channel()
+    for {
+        select {
+        case <-r.ctx.Done():
+            return
+        case msg, ok := <-ch:
+            if !ok { return }
+            // 非阻塞通知内部 channel
+            select {
+            case r.notify <- struct{}{}:
+            default:
+                // channel 已满，说明已有待处理的扫描任务，丢弃多余信号
+            }
+        }
+    }
+}
+```
+
+`scanLoop` 监听 `notify` channel 和 Ticker，任一触发即执行扫描：
+
+```go
+func (r *Relay) scanLoop() {
+    ticker := time.NewTicker(10 * time.Second)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-r.ctx.Done():
+            return
+        case <-r.notify:
+            // 收到通知，立即扫描
+            r.scanAndDeliver()
+        case <-ticker.C:
+            // 兜底扫描
+            r.scanAndDeliver()
+        }
+    }
+}
+```
+
+关键设计点：
+
+- **notify channel 缓冲为 1**：多余的 Redis 通知信号丢弃（避免重复扫描），因为只需要一个触发信号即可唤醒扫描
+- **非阻塞写入**：`select { case r.notify <- struct{}{}:; default: }` 保证 SUBSCRIBE 处理不会被阻塞
+- **Ticker 兜底**：即使 Redis 不可用或 PUBLISH 失败，10 秒内也能完成投递
+- **go-redis v7 断线重连**：go-redis v7 客户端内置断线自动重连机制，无需手动处理
+
+### 12.4 效果对比
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                                                                      │
+│  纯轮询模式 (旧):                                                    │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Ticker(2s) → scanAndDeliver()                              │   │
+│  │ 延迟: 最多 2 秒                                              │   │
+│  │ DB QPS: 0.5 QPS (空闲时 100% 空查询)                        │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  通知驱动模式 (新):                                                  │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Redis SUBSCRIBE → 立即 scanAndDeliver()                     │   │
+│  │ + Ticker(10s) 兜底                                           │   │
+│  │ 延迟: 毫秒级 (Redis Pub/Sub 传播延迟 < 1ms)                 │   │
+│  │ DB QPS: 空闲时 0.1 QPS (每 10s 一次兜底查询)               │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  对比:                                                               │
+│  ┌─────────────┬────────────────┬────────────────┐             │
+│  │ 指标          │ 纯轮询模式   │ 通知驱动模式   │             │
+│  ├─────────────┼────────────────┼────────────────┤             │
+│  │ 事件投递延迟 │ 最多 2 秒     │ 毫秒级          │             │
+│  │ 空闲 DB QPS  │ 0.5 QPS       │ 0.1 QPS         │             │
+│  │ 实时性       │ 低             │ 高              │             │
+│  │ Redis 依赖   │ 无             │ 有 (可降级)    │             │
+│  └─────────────┴────────────────┴────────────────┘             │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### 12.5 多进程架构下的通信链路
+
+在当前项目的多进程架构中，Observer 运行在 HTTP Server 进程（`shop-server`），Relay 运行在 Worker 进程（`shop-worker`），两者通过 Redis Pub/Sub 实现跨进程实时通知：
+
+```
+shop-server 进程 (HTTP)              shop-worker 进程 (Worker)
+         │                                    │
+  Observer.AfterCreate/Update                 │
+         │                                    │
+  WriteOutbox(tx, ...)                        │
+         │                                    │
+  事务提交 ✓                                  │
+         │                                    │
+  go notifyRelay(event_id)                    │
+         │                                    │
+  Redis PUBLISH("outbox:new")                 │
+         │                                    │
+         │         Redis Pub/Sub              │
+         │              │                     │
+         │              └──────────▶ subscribeNotify()
+         │                                    │
+         │                              r.notify <- struct{}{}
+         │                                    │
+         │                              scanLoop 触发
+         │                                    │
+         │                              scanAndDeliver()
+         │                              → Kafka Producer.Send()
+         │                                    │
+```
+
+### 12.6 注意事项
+
+1. **Redis 不可用降级**：当 Redis 客户端未初始化（`global.RedisClient == nil`）或 PUBLISH 失败时，系统自动降级为纯 Ticker 兜底模式（10s 间隔），不影响业务事务的正常执行
+2. **多实例安全**：多个 Worker 实例同时收到 Redis 通知，通过数据库行锁（`UPDATE ... WHERE status='WAIT'`）保证每条记录只被一个 Relay 实例投递
+3. **notify channel 缓冲设计**：缓冲设为 1，多余信号丢弃，因为只需一个触发信号即可唤醒扫描，避免重复扫描浪费 DB 资源
+4. **Ticker 间隔选择**：从 2s 放宽到 10s，在实时性和 DB 压力之间取得平衡；即使 Redis 通知完全失效，最大延迟也仅 10s

@@ -23,12 +23,16 @@ type WorkerRelayConfig struct {
 	CleanupDays    int // 清理多少天前的 SENT 记录
 }
 
+// outboxNotifyChannel Redis Pub/Sub 频道名，WriteOutbox 写入后 PUBLISH，Relay SUBSCRIBE 监听
+const outboxNotifyChannel = "outbox:new"
+
 // Relay 事务发件箱投递器
 // 定时扫描 event_outbox 表中 status=WAIT 的记录，投递到 Kafka
 type Relay struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	config WorkerRelayConfig
+	notify chan struct{} // 内部通知 channel，收到 Redis 通知后触发立即扫描
 }
 
 // NewRelay 创建 Relay 实例
@@ -38,28 +42,29 @@ func NewRelay(config WorkerRelayConfig) *Relay {
 		ctx:    ctx,
 		cancel: cancel,
 		config: config,
+		notify: make(chan struct{}, 1), // 缓冲为 1，多余信号丢弃
 	}
 }
 
 // Start 启动 Relay 循环
-// 启动三个定时任务（各自用 time.NewTicker，避免 CPU 空转）：
-// 1. 主循环：扫描 WAIT 记录 → 投递 Kafka
-// 2. 租约回收：扫描超时的 SENDING 记录
-// 3. 定期清理：删除过期的 SENT 记录
+// 通知驱动 + Ticker 兜底：
+// 1. Redis SUBSCRIBE 监听 outbox 通知，收到信号立即扫描
+// 2. Ticker 兜底（间隔 10s），保证最终一致
+// 3. 租约回收：扫描超时的 SENDING 记录（间隔 30s）
+// 4. 定期清理：删除过期的 SENT 记录（每小时）
 func (r *Relay) Start() {
-	global.LOG.Info("[relay] Relay 已启动")
+	global.LOG.Info("[relay] Relay 已启动（通知驱动 + Ticker 兜底模式）")
 
-	// 1. 主循环：扫描 WAIT 记录并投递
-	go r.loop("scan-deliver", r.config.PollInterval, r.scanAndDeliver)
+	// 1. 启动 Redis SUBSCRIBE 监听
+	go r.subscribeNotify()
 
-	// 2. 租约回收：扫描超时的 SENDING 记录（间隔为轮询间隔的 2 倍）
-	reclaimInterval := r.config.PollInterval * 2
-	if reclaimInterval < 10*time.Second {
-		reclaimInterval = 10 * time.Second
-	}
-	go r.loop("reclaim-lease", reclaimInterval, r.reclaimLease)
+	// 2. 主循环：Ticker 兜底（10s）+ 通知触发
+	go r.scanLoop()
 
-	// 3. 定期清理：删除过期的 SENT 记录（每小时清理一次）
+	// 3. 租约回收：扫描超时的 SENDING 记录（间隔 30s）
+	go r.loop("reclaim-lease", 30*time.Second, r.reclaimLease)
+
+	// 4. 定期清理：删除过期的 SENT 记录（每小时）
 	go r.loop("cleanup-sent", 1*time.Hour, r.cleanupSent)
 }
 
@@ -67,6 +72,77 @@ func (r *Relay) Start() {
 func (r *Relay) Stop() {
 	r.cancel()
 	global.LOG.Info("[relay] Relay 已停止")
+}
+
+// subscribeNotify 监听 Redis Pub/Sub 通知，收到 outbox:new 频道消息后触发内部 notify channel
+// go-redis v7 断线后自动重连
+func (r *Relay) subscribeNotify() {
+	if global.RedisClient == nil {
+		global.LOG.Warn("[relay] Redis 客户端未初始化，仅使用 Ticker 兜底")
+		return
+	}
+
+	pubsub := global.RedisClient.Subscribe(outboxNotifyChannel)
+	defer pubsub.Close()
+
+	ch := pubsub.Channel()
+	global.LOG.Infof("[relay] 已订阅 Redis 频道: %s", outboxNotifyChannel)
+
+	for {
+		select {
+		case <-r.ctx.Done():
+			global.LOG.Info("[relay] subscribeNotify 已退出")
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				// channel 被关闭（pubsub.Close() 触发）
+				return
+			}
+			global.LOG.Debugf("[relay] 收到 outbox 通知: %s", msg.Payload)
+			// 非阻塞通知内部 channel
+			select {
+			case r.notify <- struct{}{}:
+			default:
+				// channel 已满，说明已有待处理的扫描任务，丢弃多余信号
+			}
+		}
+	}
+}
+
+// scanLoop 主扫描循环：Ticker 兜底（10s）+ 通知触发
+func (r *Relay) scanLoop() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	global.LOG.Info("[relay] scanLoop 已启动（Ticker=10s + 通知触发）")
+
+	for {
+		select {
+		case <-r.ctx.Done():
+			global.LOG.Info("[relay] scanLoop 已退出")
+			return
+		case <-r.notify:
+			// 收到通知，立即扫描
+			func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						global.LOG.Errorf("[relay] scanLoop 通知触发扫描 panic recovered: %v", rec)
+					}
+				}()
+				r.scanAndDeliver()
+			}()
+		case <-ticker.C:
+			// 兜底扫描
+			func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						global.LOG.Errorf("[relay] scanLoop 兜底扫描 panic recovered: %v", rec)
+					}
+				}()
+				r.scanAndDeliver()
+			}()
+		}
+	}
 }
 
 // loop 通用定时循环，按 interval 间隔执行 fn，避免 CPU 空转

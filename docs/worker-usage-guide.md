@@ -13,8 +13,8 @@ Worker 模块是 Shop-Main 项目中的**常驻进程 Kafka 队列消费服务**
 
 Worker 模块的核心能力：
 
-- **Transactional Outbox 事件投递**：业务操作与事件记录写入同一事务，保证原子性；Relay 异步扫描并投递到 Kafka
-- **Kafka 消费**：双缓冲架构（Poller + Worker Pool 分离），慢处理不阻塞拉取，避免 rebalance
+- **Transactional Outbox 事件投递**：业务操作与事件记录写入同一事务，保证原子性；写入后通过 Redis PUBLISH 通知 Relay 立即扫描投递，延迟降至毫秒级
+- **Kafka 消费**：双缓冲架构（Poller + Worker Pool 分离），支持有序消费（Key-Based Routing）和消息处理超时控制，慢处理不阻塞拉取，避免 rebalance
 - **幂等处理**：双层幂等保障（状态机校验 + processed_events 幂等表），实现 at-least-once 语义下的恰好一次效果
 
 ---
@@ -25,9 +25,10 @@ Worker 模块的核心能力：
 
 ```
 业务操作 → Observer 写 event_outbox（同事务）
-         → Relay 扫描投递 Kafka（带 Headers）
-         → Consumer 拉取 → Worker Pool 分发
-         → Handler 幂等检查 → 业务处理
+         → go notifyRelay() → Redis PUBLISH("outbox:new")
+         → Relay SUBSCRIBE 收到通知 → 立即扫描投递 Kafka（带 Headers）
+         → Consumer 拉取 → Worker Pool 分发（有序/无序模式）
+         → Handler 幂等检查 → 业务处理（超时控制）
 ```
 
 ### 关键设计模式
@@ -35,7 +36,7 @@ Worker 模块的核心能力：
 | 设计模式 | 应用位置 | 说明 |
 |---------|---------|------|
 | **Producer-Consumer** | `consumer.go` | Poller 拉取消息写入 tasks channel，Worker Pool 从 channel 读取处理，实现解耦和背压 |
-| **Outbox** | `outbox.go` + `relay.go` | 业务事务中写入 event_outbox，Relay 异步投递 Kafka，保证事务一致性 |
+| **Outbox** | `outbox.go` + `relay.go` | 业务事务中写入 event_outbox，Redis PUBLISH 通知 Relay，Relay 异步投递 Kafka，保证事务一致性 |
 | **Strategy** | `handler.go` + `registry.go` | 不同 topic 对应不同 Handler 策略，通过注册表动态分发 |
 | **Chain of Responsibility** | `middleware.go` | Recovery → Logging → Timeout 中间件链，逐层包装 Handler |
 
@@ -47,12 +48,12 @@ Worker 模块的核心能力：
 cmd/worker/main.go              — Worker 入口程序（选择性 Bootstrap + Engine 启动）
 internal/worker/
   ├── engine.go                 — 引擎（生命周期管理：创建 Consumer/Relay，协调启动和关闭）
-  ├── consumer.go               — Kafka Consumer（双缓冲架构：Poller + Worker Pool）
+  ├── consumer.go               — Kafka Consumer（双缓冲架构：Poller + Worker Pool，支持有序消费 + 超时控制）
   ├── handler.go                — Handler 接口定义 + Event 结构体 + HandlerFunc 适配
   ├── registry.go               — Handler 注册表（按 topic 注册，线程安全）
   ├── middleware.go             — Middleware 链（Recovery/Logging/Timeout 中间件）
-  ├── relay.go                  — Outbox Relay（扫描投递 + 租约回收 + 定期清理）
-  └── outbox.go                 — Outbox 写入辅助函数 + Topic 常量定义
+  ├── relay.go                  — Outbox Relay（Redis Pub/Sub 通知 + Ticker 兜底扫描投递 + 租约回收 + 定期清理）
+  └── outbox.go                 — Outbox 写入辅助函数 + Redis 通知 + Topic 常量定义
 internal/workers/
   ├── register.go               — 统一注册所有 Handler 到 Engine
   ├── demo_handler.go           — Demo Handler（验证 Kafka 消费用）
@@ -78,16 +79,32 @@ kafka:
 worker:
   enabled: true                  # 是否启用 Worker（false 则跳过启动）
   group-id: "shop-worker"        # Consumer Group ID（必填）
-  topics:                        # 监听的 Topic 列表（必填，至少一个）
-    - "shop-product-events"
-    - "shop-order-events"
-  concurrency: 10                # Worker Pool 并发 goroutine 数（默认 1）
-  poll-interval: "2s"            # Outbox Relay 扫描间隔（Go duration 格式）
+
+  # ===== 方式一：per-Handler 独立配置（推荐） =====
+  handlers:
+    - topic: "shop-order-events"
+      concurrency: 20
+      ordered: false             # 是否有序消费（同 key 同 worker）
+      buffer-size: 2000
+    - topic: "shop-product-events"
+      concurrency: 10
+      ordered: false
+      buffer-size: 1000
+
+  # 全局默认值（handlers 中未指定的字段使用此默认值）
+  default-concurrency: 10
+  default-buffer-size: 1000
+
+  # Relay 配置
+  poll-interval: "2s"            # 已用于 Ticker 兜底间隔计算
   max-retries: 5                 # 投递失败最大重试次数（默认 5）
   retry-base-delay: "1s"         # 重试基础延迟，指数退避（默认 1s）
   relay-batch-size: 100          # Relay 每次扫描最大记录数（默认 100）
   relay-lease-timeout: "60s"     # SENDING 状态租约超时，超时后回收（默认 60s）
   relay-cleanup-days: 7          # 清理多少天前的 SENT 记录（默认 7 天）
+
+  # 超时控制
+  handler-timeout: "30s"         # 单条消息处理超时时间（默认 30s）
 ```
 
 ### 配置项详解
@@ -96,9 +113,15 @@ worker:
 |--------|------|--------|------|
 | `enabled` | bool | — | 设为 `false` 时 Engine 不启动，进程直接跳过 |
 | `group-id` | string | — | Kafka Consumer Group ID，同组消费者共享分区分配 |
-| `topics` | []string | — | 订阅的 Kafka Topic 列表，必须与 Relay 投递的 Topic 一致 |
-| `concurrency` | int | 1 | Worker Pool 中处理消息的 goroutine 数量，建议设为 CPU 核数的 2-4 倍 |
-| `poll-interval` | string | 5s | Relay 扫描 WAIT 记录的间隔，格式为 Go duration（如 `2s`、`500ms`） |
+| `handlers` | []HandlerConfig | — | per-Handler 独立配置（推荐方式），每个 topic 对应一个配置项 |
+| `handlers[].topic` | string | — | 监听的 Kafka Topic |
+| `handlers[].concurrency` | int | 1 | 该 Handler 的 Worker Pool 并发数 |
+| `handlers[].ordered` | bool | false | 是否有序消费，true 时同 key 路由到同一 Worker（FNV-1a hash） |
+| `handlers[].buffer-size` | int | 1000 | tasks/orderedCh channel 缓冲大小 |
+| `default-concurrency` | int | 1 | 全局默认并发数（handlers 中未指定时使用） |
+| `default-buffer-size` | int | 1000 | 全局默认缓冲大小（handlers 中未指定时使用） |
+| `handler-timeout` | string | 30s | 单条消息处理超时时间，processEvent 中 context.WithTimeout |
+| `poll-interval` | string | 5s | Relay Ticker 兜底间隔计算基础（当前 scanLoop Ticker 固定 10s） |
 | `max-retries` | int | 5 | 投递失败后的最大重试次数，超过后移入死信表 |
 | `retry-base-delay` | string | 1s | 指数退避基础延迟：`baseDelay × 2^retryCount`，最大 30 分钟 |
 | `relay-batch-size` | int | 100 | 每次 Relay 扫描最多处理的记录数，防止一次加载过多 |
@@ -207,14 +230,24 @@ func RegisterAll(engine *worker.Engine) {
 }
 ```
 
-**第三步**：确保 `conf/config.yml` 的 `worker.topics` 中包含新 topic
+**第三步**：在 `conf/config.yml` 的 `worker.handlers` 中添加新 topic 配置（推荐方式），或在旧版 `worker.topics` 中添加
 
 ```yaml
 worker:
-  topics:
-    - "shop-product-events"
-    - "shop-order-events"
-    - "shop-payment-events"    # 新增
+  # 推荐方式：per-Handler 独立配置
+  handlers:
+    - topic: "shop-product-events"
+      concurrency: 10
+      ordered: false
+      buffer-size: 1000
+    - topic: "shop-order-events"
+      concurrency: 20
+      ordered: false
+      buffer-size: 2000
+    - topic: "shop-payment-events"    # 新增
+      concurrency: 5
+      ordered: false
+      buffer-size: 500
 ```
 
 **第四步**：重新编译运行
@@ -276,11 +309,12 @@ type Handler interface {
 
 ### 1. Outbox 表自动清理
 
-Relay 内置三个定时任务自动管理 Outbox 表：
+Relay 内置四个定时任务自动管理 Outbox 表：
 
-- **扫描投递**（间隔 = `poll-interval`）：将 WAIT 记录投递到 Kafka
-- **租约回收**（间隔 = `poll-interval × 2`，最小 10s）：将超时的 SENDING 记录重置为 WAIT
-- **定期清理**（间隔 = 1 小时）：分批删除超过 `relay-cleanup-days` 天的 SENT 记录（每批 1000 条，避免锁表）
+- **通知驱动扫描**（Redis SUBSCRIBE "outbox:new"）：WriteOutbox 写入后异步 PUBLISH 通知，Relay 收到通知立即扫描投递，延迟降至毫秒级
+- **Ticker 兜底扫描**（间隔 10s）：作为通知机制的兑底，保证最终一致性
+- **租约回收**（间隔 30s）：将超时的 SENDING 记录重置为 WAIT
+- **定期清理**（间隔 1 小时）：分批删除超过 `relay-cleanup-days` 天的 SENT 记录（每批 1000 条，避免锁表）
 
 无需手动干预，但建议监控 `event_outbox` 表数据量，异常积压时排查 Relay 日志。
 
@@ -329,3 +363,31 @@ Relay 支持多实例并行运行：
 - 通过 `UPDATE ... WHERE status='WAIT'` 原子抢占实现分布式锁效果
 - `RowsAffected == 0` 表示已被其他实例抢占，自动跳过
 - 租约回收机制保证异常实例的 SENDING 记录能被回收重投
+
+### 7. 有序消费注意事项
+
+当配置 `ordered: true` 时，Consumer 启用 Key-Based Routing 模式：
+
+- **路由算法**：FNV-1a 哈希，`idx = FNV-1a(event.Key) % concurrency`
+- **同 key 同 worker**：相同 partition_key 的消息始终由同一个 OrderedWorker 处理，保证严格有序
+- **并发度受限**：实际并发度受 key 分布影响，若所有消息 key 相同则退化为单 goroutine 串行处理
+- **适用场景**：订单状态变更、商品更新等需要保证同一业务实体事件按序处理的场景
+- **不适用场景**：消息间无顺序依赖、追求最大吞吐的场景，应使用 `ordered: false`（默认）
+
+### 8. 超时控制注意事项
+
+Worker 通过 `context.WithTimeout` 为每条消息设置处理超时：
+
+- **默认超时**：30 秒（`defaultTimeout = 30 * time.Second`）
+- **配置方式**：通过 `worker.handler-timeout` 配置项调整，格式为 Go duration（如 `"30s"`、`"1m"`）
+- **超时行为**：Handler 处理超时后，`context` 被取消，记录错误日志（`处理消息超时`），消息继续被标记为已消费
+- **注意**：超时不会中断 Handler 内部的 DB 操作，只是传递取消信号，Handler 应检查 `ctx.Err()` 并及时退出
+
+### 9. Relay 通知驱动说明
+
+Relay 采用 Redis Pub/Sub 通知 + Ticker 兜底的双触发机制：
+
+- **通知链路**：WriteOutbox 写入成功 → goroutine 异步执行 `Redis PUBLISH("outbox:new", event_id)` → Relay `SUBSCRIBE` 收到通知 → 立即执行 `scanAndDeliver()`
+- **兑底机制**：Ticker 每 10 秒触发一次扫描，保证即使 Redis 通知失败也能最终投递
+- **Redis 不可用影响**：Redis 客户端未初始化或 PUBLISH 失败时，仅记录 warn 日志，不影响主流程；Relay 退化为纯 Ticker 兜底模式（10s 间隔）
+- **多实例安全**：多个 Relay 实例同时收到通知，通过数据库行锁（`UPDATE ... WHERE status='WAIT'`）保证只有一条记录被一个实例投递

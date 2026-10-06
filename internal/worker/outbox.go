@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"shop/internal/models"
+	"shop/pkg/global"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -46,5 +47,24 @@ func WriteOutbox(tx *gorm.DB, aggregateId, eventType, topic, partitionKey string
 		UpdatedAt:    now,
 	}
 
-	return tx.Create(&outbox).Error
+	if err := tx.Create(&outbox).Error; err != nil {
+		return err
+	}
+
+	// Redis PUBLISH 通知 Relay 立即扫描投递（goroutine 异步执行，不阻塞业务事务）
+	// 失败不影响主流程，Ticker 兜底保证最终一致
+	go notifyRelay(outbox.EventId)
+
+	return nil
+}
+
+// notifyRelay 通过 Redis Pub/Sub 通知 Relay 有新 outbox 记录
+func notifyRelay(eventId string) {
+	if global.RedisClient == nil {
+		return
+	}
+	if err := global.RedisClient.Publish(outboxNotifyChannel, eventId).Err(); err != nil {
+		global.LOG.Warnf("[outbox] Redis 通知失败 event_id=%s: %v", eventId, err)
+		// 不影响主流程，Relay 的 Ticker 兜底会处理
+	}
 }
