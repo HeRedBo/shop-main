@@ -1,7 +1,10 @@
 package observers
 
 import (
+	"log"
+
 	"shop/internal/models"
+	"shop/internal/worker"
 	"shop/pkg/global"
 
 	"gorm.io/gorm"
@@ -24,13 +27,19 @@ func (o *OrderObserver) AfterCreate(tx *gorm.DB, model interface{}) error {
 
 	if global.LOG != nil {
 		global.LOG.Infof("[OrderObserver] 订单创建: %s, 用户: %d", order.OrderId, order.Uid)
+	} else {
+		log.Printf("[OrderObserver] 订单创建: %s, 用户: %d", order.OrderId, order.Uid)
 	}
 
-	// TODO: 记录订单初始状态
-	// TODO: 发送订单创建通知
-	// TODO: 启动订单超时取消任务
-
-	return nil
+	// 写入 Outbox：订单创建事件
+	return worker.WriteOutbox(
+		tx,
+		order.OrderId,
+		"order.created",
+		worker.TopicOrderEvents,
+		order.OrderId,
+		order,
+	)
 }
 
 // AfterUpdate 更新后回调
@@ -42,9 +51,35 @@ func (o *OrderObserver) AfterUpdate(tx *gorm.DB, model interface{}) error {
 
 	if global.LOG != nil {
 		global.LOG.Infof("[OrderObserver] 订单更新: %s, 用户: %d, 状态: %d", order.OrderId, order.Uid, order.Status)
+	} else {
+		log.Printf("[OrderObserver] 订单更新: %s, 用户: %d, 状态: %d", order.OrderId, order.Uid, order.Status)
 	}
 
-	// TODO: 处理订单状态变更（如支付成功、发货、完成、取消等）
+	// 写入 Outbox：订单状态变更事件
+	return worker.WriteOutbox(
+		tx,
+		order.OrderId,
+		orderEventName(order.Status),
+		worker.TopicOrderEvents,
+		order.OrderId,
+		order,
+	)
+}
 
-	return nil
+// orderEventName 根据订单状态返回对应的事件类型名称
+func orderEventName(status int) string {
+	switch status {
+	case 0:
+		return "order.created"     // 待支付
+	case 1:
+		return "order.paid"        // 已支付
+	case 2:
+		return "order.shipped"     // 已发货
+	case 3:
+		return "order.completed"   // 已完成
+	case -1:
+		return "order.canceled"    // 已取消
+	default:
+		return "order.updated"     // 其他状态变更
+	}
 }

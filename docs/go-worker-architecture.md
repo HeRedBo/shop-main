@@ -806,3 +806,138 @@ Pipe-Filter ───────────── Relay → Kafka → Middlewa
 本方案的核心设计思想：**用数据库事务保证事件生产的原子性（Outbox），用 Kafka 实现生产与消费的解耦（异步），用 Middleware 链实现消费逻辑的可插拔（扩展），用 Worker Pool + 幂等保证消费的安全性和可控性（可靠）**。
 
 整套架构通过 Producer-Consumer、Outbox、Strategy、Chain of Responsibility、Observer、State Machine 等经典设计模式的组合，构建了一个从事件生产到消费的完整闭环，覆盖了可靠性、可扩展性、可观测性三大生产环境核心诉求。
+
+---
+
+## 十、Transactional Outbox 深度解析
+
+### 10.1 行业地位与验证
+
+Transactional Outbox 是目前解决"业务操作 + 事件发送"一致性问题的业界公认最佳实践。
+
+核心矛盾（Dual Write Problem 双写问题）：业务操作（MySQL 事务）和发送消息（Kafka）是两个独立操作，不在同一个事务中，无法同时成功或同时失败。
+
+业界方案对比：
+
+| 方案 | 一致性 | 复杂度 | 评价 |
+|------|--------|--------|------|
+| 2PC（两阶段提交） | 强一致 | 极高 | 需 Kafka 支持 XA 事务，性能极差，生产不可用 |
+| Kafka 事务 API | 较强 | 高 | Kafka 事务不能包住 MySQL 事务，无法完全解决 |
+| **本地消息表（Outbox）** | **最终一致** | **中** | **利用本地数据库事务，最简单可靠** |
+| 直接发送 + 重试补偿 | 弱 | 低 | 有丢失风险，只适合非关键场景 |
+
+Outbox 的核心优势：**把"跨系统的一致性问题"转化为"单个数据库的事务问题"——这是降维打击。**
+
+行业实践者：Uber（2018 年最早公开提出）、Amazon（AWS 微服务最佳实践推荐）、Microsoft（eShopOnContainers 参考架构）、阿里（微服务本地消息表实践）。
+
+### 10.2 Outbox 落地注意事项
+
+#### 1. Outbox 表膨胀
+
+如果不清理，outbox 表会无限增长。
+
+- 必须定期清理 SENT 状态超过 7 天的记录
+- 分批删除（每次 1000 条），避免锁表影响线上业务
+- 建议每天凌晨低峰期执行清理
+
+#### 2. Relay 轮询间隔的权衡
+
+- 间隔太短（如 100ms）→ 频繁查询 DB，增加数据库压力
+- 间隔太长（如 30s）→ 事件投递延迟大，下游感知慢
+- 建议：2~5 秒，根据业务对延迟的容忍度调整
+
+#### 3. Relay 多实例部署的抢占问题
+
+如果部署了多个 Worker 实例，每个实例都有 Relay，会重复扫描同一条 WAIT 记录。
+
+- 使用 `SELECT ... FOR UPDATE` 行锁抢占
+- 或使用 `UPDATE ... WHERE status='WAIT' LIMIT N` 原子更新
+- 要加 `sending_at` 时间戳 + 租约超时（如 60s），防止 Relay 崩溃后记录永远卡在 SENDING
+
+#### 4. SENDING 状态的租约回收
+
+Relay 拿到一条记录开始投递，但如果 Relay 进程崩溃了，这条记录就永远卡在 SENDING。
+
+- 回收器定期扫描 `sending_at` 超过 60s 的 SENDING 记录
+- 将它们重新置为 WAIT，让其他 Relay 实例重新抢占
+
+#### 5. 消费端必须幂等
+
+Relay 可能"Kafka 发送成功但标记 SENT 前崩溃"，导致同一条消息被重复投递。这就是"状态机 + 幂等表"双层方案存在的意义。
+
+#### 6. Outbox 写入对业务事务的影响
+
+每次业务操作多写一条 outbox 记录，会增加事务的写量和持锁时间。
+
+- 通常可忽略（outbox 记录很小，几十字节）
+- 极高并发场景可考虑批量写入（先写内存 buffer，定时刷盘）
+
+---
+
+## 十一、常驻进程 CPU 空转防范
+
+### 11.1 什么是 CPU 空转
+
+常驻进程中，如果某个循环没有正确的阻塞/等待机制，会持续占用 CPU 时间片，导致 CPU 使用率异常升高。
+
+```
+错误示范：CPU 空转
+for {
+    if hasTask() {
+        processTask()
+    }
+    // 没有 sleep！CPU 一直在跑这个循环
+}
+```
+
+### 11.2 常驻进程中需要防止空转的场景
+
+| 场景 | 空转风险 | 正确做法 |
+|------|---------|----------|
+| Outbox Relay 轮询 | 持续查询 DB | `time.Ticker` 每 N 秒扫描一次，扫描完等待下一个 tick |
+| Kafka Consumer Poll | 持续拉取消息 | Sarama `ConsumerGroup.Consume()` 内部阻塞等待，无消息时不消耗 CPU |
+| Worker Pool 等待任务 | 持续检查 channel | `for task := range channel` 阻塞读取，channel 空时 goroutine 自动挂起 |
+| 健康检查上报 | 持续采集指标 | `time.Ticker` 定时采集，不要轮询 |
+| 优雅关闭等待 | 持续检查退出标志 | `<-ctx.Done()` 阻塞等待信号 |
+| Outbox 回收器 | 扫描超时记录 | `time.Ticker` 每 30s 扫描一次 |
+
+### 11.3 Go 中防止空转的核心原则
+
+**原则一：用阻塞代替轮询**
+
+能用 channel 阻塞就用 channel（`for range` / `select`），能用 Kafka 长轮询就用长轮询（ConsumerGroup 自带），能用 `sync.Cond` 就用条件变量。
+
+**原则二：必须轮询时加 sleep/ticker**
+
+Outbox Relay 每轮扫描后等待下一个 tick，健康检查用 `time.Ticker` 定期采集，清理任务用 `time.Ticker` 每天执行一次。
+
+**原则三：用 select + timer 代替忙等待**
+
+需要"等待某事发生 + 超时兜底"时，用 `select` + `time.After`，不要用 for 循环不停检查。
+
+**原则四：避免定时器泄漏**
+
+不要在循环中使用 `time.After`（每次迭代都会创建一个新的定时器，旧的在触发前不会被回收）。应使用 `time.NewTicker` + `defer ticker.Stop()`。
+
+### 11.4 Worker 架构中的空转防范设计
+
+| 组件 | 是否可能空转 | 设计方案 |
+|------|:---:|----------|
+| Outbox Relay | 是 | `time.NewTicker` 每 N 秒扫描一次，扫描完等待下一个 tick |
+| Kafka Consumer | 否 | Sarama `Consume()` 内部阻塞，无消息时不消耗 CPU |
+| Worker Pool | 否 | `for task := range taskChan` 阻塞读取，无任务时 goroutine 挂起 |
+| 优雅关闭 | 否 | `<-ctx.Done()` 阻塞等待退出信号 |
+| 指标上报 | 是 | `time.NewTicker` 定期采集 |
+| Outbox 回收器 | 是 | `time.NewTicker` 每 30s 扫描一次 |
+
+### 11.5 Goroutine 数量与 CPU 的关系
+
+即使每个 goroutine 都在正确阻塞，如果 goroutine 数量过多（泄漏），调度器本身的切换开销也会消耗 CPU：
+
+- 正常情况：10~50 个 goroutine → 调度开销可忽略
+- 泄漏情况：10000+ 个 goroutine → 调度器切换开销显著，CPU 上升
+
+防范手段：
+- `runtime.NumGoroutine()` 监控，异常增长时告警
+- `goleak` 在测试阶段检测泄漏
+- 所有 goroutine 必须有退出机制

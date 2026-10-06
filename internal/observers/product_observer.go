@@ -1,9 +1,11 @@
 package observers
 
 import (
+	"fmt"
 	"log"
 
 	"shop/internal/models"
+	"shop/internal/worker"
 	"shop/pkg/global"
 
 	"gorm.io/gorm"
@@ -30,10 +32,15 @@ func (o *ProductObserver) AfterCreate(tx *gorm.DB, model interface{}) error {
 		log.Printf("[ProductObserver] 商品创建: %s (ID: %d)", product.StoreName, product.Id)
 	}
 
-	// TODO: 同步商品数据到 Elasticsearch
-	// TODO: 发送商品上架通知
-
-	return nil
+	// 写入 Outbox：商品创建事件
+	return worker.WriteOutbox(
+		tx,
+		fmt.Sprintf("%d", product.Id),
+		"product.created",
+		worker.TopicProductEvents,
+		fmt.Sprintf("%d", product.Id),
+		product,
+	)
 }
 
 // AfterUpdate 更新后回调
@@ -49,9 +56,15 @@ func (o *ProductObserver) AfterUpdate(tx *gorm.DB, model interface{}) error {
 		log.Printf("[ProductObserver] 商品更新: %s (ID: %d)", product.StoreName, product.Id)
 	}
 
-	// TODO: 更新 Elasticsearch 索引
-
-	return nil
+	// 写入 Outbox：商品更新事件
+	return worker.WriteOutbox(
+		tx,
+		fmt.Sprintf("%d", product.Id),
+		"product.updated",
+		worker.TopicProductEvents,
+		fmt.Sprintf("%d", product.Id),
+		product,
+	)
 }
 
 // AfterDelete 删除后回调
@@ -67,8 +80,14 @@ func (o *ProductObserver) AfterDelete(tx *gorm.DB, model interface{}) error {
 		log.Printf("[ProductObserver] 商品删除: %s (ID: %d)", product.StoreName, product.Id)
 	}
 
-	// TODO: 清理 Elasticsearch 索引
-
-	return nil
+	// 写入 Outbox：商品删除事件
+	return worker.WriteOutbox(
+		tx,
+		fmt.Sprintf("%d", product.Id),
+		"product.deleted",
+		worker.TopicProductEvents,
+		fmt.Sprintf("%d", product.Id),
+		product,
+	)
 }
 

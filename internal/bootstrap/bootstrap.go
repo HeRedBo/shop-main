@@ -13,6 +13,7 @@ import (
 	"github.com/HeRedBo/pkg/db"
 	"github.com/HeRedBo/pkg/logx/zapx"
 	"github.com/HeRedBo/pkg/mq"
+	"github.com/IBM/sarama"
 	"github.com/go-redis/redis/v7"
 )
 
@@ -49,17 +50,19 @@ func ResolveConfigPath(configPath string) string {
 type Option func(*bootstrapConfig)
 
 type bootstrapConfig struct {
-	casbin   bool
-	observer bool
-	jwt      bool
-	kafka    bool
+	casbin        bool
+	observer      bool
+	jwt           bool
+	kafka         bool
+	kafkaConsumer bool
 }
 
 // componentFlags 记录实际初始化的组件，Shutdown 仅关闭已初始化的资源
 var componentFlags struct {
-	redis bool
-	mysql bool
-	kafka bool
+	redis         bool
+	mysql         bool
+	kafka         bool
+	kafkaConsumer bool
 }
 
 // WithCasbin 启用 Casbin 初始化
@@ -87,6 +90,13 @@ func WithJWT() Option {
 func WithKafka() Option {
 	return func(c *bootstrapConfig) {
 		c.kafka = true
+	}
+}
+
+// WithKafkaConsumer 启用 Kafka ConsumerGroup 初始化（供 Worker 模块使用）
+func WithKafkaConsumer() Option {
+	return func(c *bootstrapConfig) {
+		c.kafkaConsumer = true
 	}
 }
 
@@ -150,11 +160,25 @@ func BootstrapWith(configPath string, opts ...Option) {
 	if cfg.kafka {
 		initKafka()
 	}
+
+	// 9. 初始化 Kafka ConsumerGroup（可选）
+	if cfg.kafkaConsumer {
+		initKafkaConsumer()
+	}
 }
 
-// Shutdown 优雅关闭已初始化的基础组件（Kafka→Redis→MySQL→日志刷新）
+// Shutdown 优雅关闭已初始化的基础组件（Kafka→ConsumerGroup→Redis→MySQL→日志刷新）
 // 注意：HTTP Server 的关闭由各入口自行管理，不在此处处理
 func Shutdown() {
+	// 关闭 Kafka ConsumerGroup（仅当已初始化时）
+	if componentFlags.kafkaConsumer {
+		if global.KafkaConsumerGroup != nil {
+			if err := global.KafkaConsumerGroup.Close(); err != nil {
+				global.LOG.Error("kafka consumer group close error", err)
+			}
+		}
+	}
+
 	// 关闭 Kafka Producer（仅当已初始化时）
 	if componentFlags.kafka {
 		if p := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer); p != nil {
@@ -231,4 +255,23 @@ func initKafka() {
 		panic(err)
 	}
 	componentFlags.kafka = true
+}
+
+// initKafkaConsumer 初始化 Kafka ConsumerGroup（供 Worker 模块消费消息）
+func initKafkaConsumer() {
+	config := sarama.NewConfig()
+	config.Consumer.Return.Errors = true
+
+	groupId := global.CONFIG.Worker.GroupId
+	brokers := global.CONFIG.Kafka.Hosts
+
+	cg, err := sarama.NewConsumerGroup(brokers, groupId, config)
+	if err != nil {
+		global.LOG.Error("initKafkaConsumer error", err, "groupId", groupId, "brokers", brokers)
+		panic(err)
+	}
+	global.KafkaConsumerGroup = cg
+	componentFlags.kafkaConsumer = true
+
+	global.LOG.Info("kafka consumer group initialized", "groupId", groupId, "brokers", brokers)
 }

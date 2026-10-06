@@ -8,6 +8,7 @@ type Config struct {
 	Database Database `mapstructure:"database" yaml:"database"`
 	Redis    Redis    `mapstructure:"redis" yaml:"redis"`
 	Kafka    Kafka    `mapstructure:"kafka" yaml:"kafka"`
+	Worker   WorkerConfig `mapstructure:"worker" yaml:"worker"`
 	Server   Server   `mapstructure:"server" yaml:"server"`
 	Zap      Zap      `mapstructure:"zap" yaml:"zap"`
 	Wechat   Wechat   `mapstructure:"wechat" yaml:"wechat"`
@@ -78,6 +79,19 @@ type Zap struct {
 
 type Kafka struct {
 	Hosts []string `mapstructure:"hosts" yaml:"hosts"`
+}
+
+type WorkerConfig struct {
+	Enabled           bool     `mapstructure:"enabled" yaml:"enabled"`
+	GroupId           string   `mapstructure:"group-id" yaml:"group-id"`
+	Topics            []string `mapstructure:"topics" yaml:"topics"`
+	Concurrency       int      `mapstructure:"concurrency" yaml:"concurrency"`
+	PollInterval      string   `mapstructure:"poll-interval" yaml:"poll-interval"`
+	MaxRetries        int      `mapstructure:"max-retries" yaml:"max-retries"`
+	RetryBaseDelay    string   `mapstructure:"retry-base-delay" yaml:"retry-base-delay"`
+	RelayBatchSize    int      `mapstructure:"relay-batch-size" yaml:"relay-batch-size"`
+	RelayLeaseTimeout string   `mapstructure:"relay-lease-timeout" yaml:"relay-lease-timeout"`
+	RelayCleanupDays  int      `mapstructure:"relay-cleanup-days" yaml:"relay-cleanup-days"` // 清理多少天前的 SENT 记录
 }
 
 type Wechat struct {

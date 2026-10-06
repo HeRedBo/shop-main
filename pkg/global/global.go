@@ -2,6 +2,7 @@ package global
 
 import (
 	"fmt"
+	"github.com/IBM/sarama"
 	"github.com/fsnotify/fsnotify"
 	"github.com/silenceper/wechat/v2/officialaccount"
 	"github.com/spf13/viper"
@@ -12,10 +13,11 @@ import (
 )
 
 var (
-	Db             *gorm.DB
-	LOG            *zap.SugaredLogger
-	CONFIG         conf.Config
-	WechatOfficial *officialaccount.OfficialAccount
+	Db                 *gorm.DB
+	LOG                *zap.SugaredLogger
+	CONFIG             conf.Config
+	WechatOfficial     *officialaccount.OfficialAccount
+	KafkaConsumerGroup sarama.ConsumerGroup
 )
 
 // GetLogger 获取指定业务模块的 logger

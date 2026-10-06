@@ -14,7 +14,6 @@ import (
 	"shop/internal/service/pay_service"
 	"shop/pkg/app"
 	"shop/pkg/constant"
-	orderEnum "shop/pkg/enums/order"
 	"shop/pkg/global"
 	"shop/pkg/jwt"
 	"shop/pkg/util"
@@ -138,7 +137,6 @@ func (e *OrderController) Create(c *gin.Context) {
 			cartInfo = append(cartInfo, cart)
 		}
 		orderService.M.CartInfo = cartInfo
-		orderService.OrderEvent(orderEnum.OperationCreate)
 	}()
 
 	orderExtendDto := &orderDto.OrderExtend{
@@ -202,7 +200,6 @@ func (e *OrderController) Pay(c *gin.Context) {
 				cartInfo = append(cartInfo, cart)
 			}
 			orderService.M.CartInfo = cartInfo
-			orderService.OrderEvent(orderEnum.OperationUpdate)
 		}
 	}()
 
@@ -308,7 +305,6 @@ func (e *OrderController) TakeOrder(c *gin.Context) {
 				cartInfo = append(cartInfo, cart)
 			}
 			orderService.M.CartInfo = cartInfo
-			orderService.OrderEvent(orderEnum.OperationUpdate)
 		}()
 	}
 	appG.Response(http.StatusOK, constant.SUCCESS, "success")
@@ -366,11 +362,7 @@ func (e *OrderController) CancelOrder(c *gin.Context) {
 		appG.Response(http.StatusInternalServerError, err.Error(), nil)
 		return
 	} else {
-		//发送订单变更通知
 		orderService.M = order
-		defer func() {
-			orderService.OrderEvent(orderEnum.OperationDelete)
-		}()
 	}
 	appG.Response(http.StatusOK, constant.SUCCESS, "success")
 

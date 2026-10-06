@@ -68,6 +68,20 @@ zap:
     - 'mq'                     # Kafka 消息队列日志
     - 'product_sync'            # 商品同步
     - 'order_report'            # 订单统计报表
+    - 'worker'                   # Worker 消费引擎日志
+
+worker:
+  enabled: true
+  group-id: "shop-worker"
+  topics:
+    - "shop-product-events"
+    - "shop-order-events"
+  concurrency: 10
+  poll-interval: "2s"
+  max-retries: 5
+  retry-base-delay: "1s"
+  relay-batch-size: 100
+  relay-lease-timeout: "60s"
 
 wechat:
   app_id:

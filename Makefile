@@ -8,10 +8,10 @@ GOFLAGS := -ldflags="-s -w"
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
-.PHONY: all build server cli cron clean help run-server run-cli run-cron
+.PHONY: all build server cli cron worker clean help run-server run-cli run-cron run-worker
 
 # 默认目标：编译所有
-all: server cli cron
+all: server cli cron worker
 
 # 编译 HTTP 服务
 server:
@@ -34,6 +34,13 @@ cron:
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(APP_NAME)-cron ./cmd/cron/
 	@echo "==> 输出: $(BUILD_DIR)/$(APP_NAME)-cron"
 
+# 编译 Worker 服务
+worker:
+	@echo "==> 编译 Worker 服务..."
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(APP_NAME)-worker ./cmd/worker/
+	@echo "==> 输出: $(BUILD_DIR)/$(APP_NAME)-worker"
+
 # 编译所有
 build: all
 
@@ -53,6 +60,11 @@ run-cli: cli
 	@echo "==> 运行 $(APP_NAME)-cli..."
 	@./$(BUILD_DIR)/$(APP_NAME)-cli $(RUN_ARGS)
 
+# 运行 Worker 服务
+run-worker: worker
+	@echo "==> 运行 $(APP_NAME)-worker..."
+	@./$(BUILD_DIR)/$(APP_NAME)-worker
+
 # 运行定时任务服务
 run-cron: cron
 	@echo "==> 运行 $(APP_NAME)-cron..."
@@ -67,13 +79,15 @@ clean:
 # 帮助信息
 help:
 	@echo "可用命令："
-	@echo "  make build        - 编译所有服务（server + cli + cron）"
+	@echo "  make build        - 编译所有服务（server + cli + cron + worker）"
 	@echo "  make server       - 仅编译 HTTP 服务"
 	@echo "  make cli          - 仅编译 CLI 工具"
 	@echo "  make cron         - 仅编译定时任务服务"
+	@echo "  make worker       - 仅编译 Worker 服务"
 	@echo "  make build-linux  - 交叉编译 Linux 版本"
 	@echo "  make run-server   - 运行 HTTP 服务"
 	@echo "  make run-cli      - 运行 CLI 工具（可加 RUN_ARGS=\"--help\"）"
 	@echo "  make run-cron     - 运行定时任务服务"
+	@echo "  make run-worker   - 运行 Worker 服务"
 	@echo "  make clean        - 清理构建产物"
 	@echo "  make help         - 显示帮助信息"

@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"github.com/HeRedBo/pkg/cache"
 	"github.com/HeRedBo/pkg/httpclient"
-	"github.com/HeRedBo/pkg/mq"
 	"github.com/HeRedBo/pkg/sign"
 	"github.com/HeRedBo/pkg/strutil"
-	"github.com/IBM/sarama"
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
 	"github.com/segmentio/ksuid"
@@ -897,21 +895,6 @@ func (o *Order) Deliver() error {
 	o.M.Status = 1
 	o.M.DeliverySn = express.Code
 	return models.UpdateByStoreOrder(o.M)
-}
-
-func (o *Order) OrderEvent(operation string) {
-	orderMsg := models.OrderMsg{Operation: operation, StoreOrder: o.M}
-	msg, err := json.Marshal(orderMsg)
-	if err != nil {
-		global.LOG.Error("json.Marshal error", o)
-		return
-	}
-	partion, offset, err := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer).Send(
-		&sarama.ProducerMessage{Key: mq.KafkaMsgValueStrEncoder(strconv.FormatInt(o.Uid, 10)),
-			Value: mq.KafkaMsgValueEncoder(msg), Topic: orderEnum.Topic})
-	if err != nil {
-		global.LOG.Error("KafkaSyncProducer error", err, "partion : ", partion, "offset : ", offset)
-	}
 }
 
 func (o *Order) SearchOrder() ([]*orderResult, int, int) {
