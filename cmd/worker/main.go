@@ -22,9 +22,10 @@ func init() {
 func main() {
 	flag.Parse()
 
-	// 1. 初始化基础组件（配置→日志→Redis→MySQL→KafkaConsumerGroup）
+	// 1. 初始化基础组件（配置→日志→Redis→MySQL→KafkaProducer）
+	// 注意：ConsumerGroup 由 Worker Engine 内部创建，每个 Consumer 独立实例
 	bootstrap.BootstrapWith(configPath,
-		bootstrap.WithKafkaConsumer(),
+		bootstrap.WithKafka(), // Relay 投递 outbox 需要 Sync Producer
 	)
 	global.LOG.Info("[worker] 基础组件初始化完成")
 

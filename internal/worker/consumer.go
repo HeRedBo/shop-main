@@ -3,11 +3,10 @@ package worker
 import (
 	"context"
 	"hash/fnv"
+	"shop/pkg/global"
 	"strings"
 	"sync"
 	"time"
-
-	"shop/pkg/global"
 
 	"github.com/IBM/sarama"
 )
@@ -54,23 +53,31 @@ func (cfg *ConsumerConfig) Name() string {
 // defaultTimeout 默认单条消息处理超时时间
 const defaultTimeout = 30 * time.Second
 
+// consumeTask 封装 Event + Kafka session + message，用于在 channel 中传递
+// Worker 处理成功后通过 session 标记 offset，实现 at-least-once 语义
+type consumeTask struct {
+	event   *Event
+	session sarama.ConsumerGroupSession
+	msg     *sarama.ConsumerMessage
+}
+
 // Consumer 封装 Kafka ConsumerGroup 的消费逻辑
 // 采用双缓冲架构：Poller（拉取消息）和 Worker Pool（处理消息）分离
 // 每个 Consumer 绑定一个或多个 Topic，拥有独立的 tasks channel 和 Worker Pool
 // 慢处理不会阻塞 Kafka 拉取，避免 rebalance
 type Consumer struct {
-	group        sarama.ConsumerGroup
-	config       ConsumerConfig         // 单 Consumer 配置
-	registry     *Registry
-	tasks        chan *Event            // 有界缓冲 channel，背压机制（无序模式）
-	ordered      bool                   // 是否有序消费
-	orderedChs   []chan *Event          // 有序模式：每个 Worker 的专属 channel
-	middlewares  []Middleware           // 全局中间件链
-	workerWg     sync.WaitGroup         // 等待 Worker Pool goroutine 退出
-	consumeWg    sync.WaitGroup         // 等待 consumeLoop goroutine 退出
-	handlerTimeout time.Duration        // 单条消息处理超时
-	ctx          context.Context
-	cancel       context.CancelFunc
+	group          sarama.ConsumerGroup
+	config         ConsumerConfig // 单 Consumer 配置
+	registry       *Registry
+	tasks          chan *consumeTask   // 有界缓冲 channel，背压机制（无序模式）
+	ordered        bool                // 是否有序消费
+	orderedChs     []chan *consumeTask // 有序模式：每个 Worker 的专属 channel
+	middlewares    []Middleware        // 全局中间件链
+	workerWg       sync.WaitGroup      // 等待 Worker Pool goroutine 退出
+	consumeWg      sync.WaitGroup      // 等待 consumeLoop goroutine 退出
+	handlerTimeout time.Duration       // 单条消息处理超时
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
 // NewConsumer 创建一个 Kafka Consumer（旧版 API，向后兼容）
@@ -116,7 +123,7 @@ func NewConsumerWithConfig(group sarama.ConsumerGroup, config ConsumerConfig, re
 			HandlerTimeout: handlerTimeout,
 		},
 		registry:       registry,
-		tasks:          make(chan *Event, bufferSize),
+		tasks:          make(chan *consumeTask, bufferSize),
 		ordered:        config.Ordered,
 		middlewares:    []Middleware{RecoveryMiddleware(), LoggingMiddleware()},
 		handlerTimeout: handlerTimeout,
@@ -138,9 +145,9 @@ func (c *Consumer) Start() {
 
 	if c.ordered {
 		// 有序模式：每个 Worker 拥有独立 channel，通过 key hash 路由
-		c.orderedChs = make([]chan *Event, c.config.Concurrency)
+		c.orderedChs = make([]chan *consumeTask, c.config.Concurrency)
 		for i := 0; i < c.config.Concurrency; i++ {
-			c.orderedChs[i] = make(chan *Event, c.config.BufferSize)
+			c.orderedChs[i] = make(chan *consumeTask, c.config.BufferSize)
 			c.workerWg.Add(1)
 			go c.orderedWorkerLoop(i, c.orderedChs[i])
 		}
@@ -218,7 +225,7 @@ func (c *Consumer) consumeLoop() {
 }
 
 // workerLoop Worker Pool 中的单个 Worker goroutine（无序模式）
-// 从 tasks channel 读取 Event，通过中间件链包装后执行 Handler
+// 从 tasks channel 读取 consumeTask，通过中间件链包装后执行 Handler
 func (c *Consumer) workerLoop(id int) {
 	defer c.workerWg.Done()
 	defer func() {
@@ -229,16 +236,16 @@ func (c *Consumer) workerLoop(id int) {
 
 	global.LOG.Infof("[worker] [%s] Worker-%d 已启动", c.config.Name(), id)
 
-	for event := range c.tasks {
-		c.processEvent(event)
+	for task := range c.tasks {
+		c.processEvent(task)
 	}
 
 	global.LOG.Infof("[worker] [%s] Worker-%d 已退出", c.config.Name(), id)
 }
 
 // orderedWorkerLoop 有序模式下的 Worker goroutine
-// 从专属 channel 读取 Event，保证同 key 的消息始终由同一个 Worker 处理
-func (c *Consumer) orderedWorkerLoop(id int, ch <-chan *Event) {
+// 从专属 channel 读取 consumeTask，保证同 key 的消息始终由同一个 Worker 处理
+func (c *Consumer) orderedWorkerLoop(id int, ch <-chan *consumeTask) {
 	defer c.workerWg.Done()
 	defer func() {
 		if r := recover(); r != nil {
@@ -248,8 +255,8 @@ func (c *Consumer) orderedWorkerLoop(id int, ch <-chan *Event) {
 
 	global.LOG.Infof("[worker] [%s] OrderedWorker-%d 已启动（有序模式）", c.config.Name(), id)
 
-	for event := range ch {
-		c.processEvent(event)
+	for task := range ch {
+		c.processEvent(task)
 	}
 
 	global.LOG.Infof("[worker] [%s] OrderedWorker-%d 已退出", c.config.Name(), id)
@@ -266,13 +273,15 @@ func routeKey(key string, count int) int {
 	return int(h.Sum32()) % count
 }
 
-// processEvent 处理单条事件
-func (c *Consumer) processEvent(event *Event) {
+// processEvent 处理单条事件（核心改动：Handler 处理成功后才标记 offset）
+func (c *Consumer) processEvent(task *consumeTask) {
 	// 根据 topic 查找 Handler
-	handler, ok := c.registry.GetHandler(event.Topic)
+	handler, ok := c.registry.GetHandler(task.event.Topic)
 	if !ok {
 		global.LOG.Warnf("[worker] [%s] 未找到 topic[%s] 的 Handler，跳过消息 offset=%d partition=%d",
-			c.config.Name(), event.Topic, event.Offset, event.Partition)
+			c.config.Name(), task.event.Topic, task.event.Offset, task.event.Partition)
+		// 找不到 Handler，标记消息避免阻塞队列
+		task.session.MarkMessage(task.msg, "")
 		return
 	}
 
@@ -288,14 +297,18 @@ func (c *Consumer) processEvent(event *Event) {
 	defer cancel()
 
 	// 执行处理
-	if err := wrappedHandler.Handle(ctx, event); err != nil {
+	if err := wrappedHandler.Handle(ctx, task.event); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			global.LOG.Errorf("[worker] [%s] 处理消息超时 topic=%s offset=%d partition=%d timeout=%v",
-				c.config.Name(), event.Topic, event.Offset, event.Partition, timeout)
+				c.config.Name(), task.event.Topic, task.event.Offset, task.event.Partition, timeout)
 		} else {
 			global.LOG.Errorf("[worker] [%s] 处理消息失败 topic=%s offset=%d partition=%d err=%v",
-				c.config.Name(), event.Topic, event.Offset, event.Partition, err)
+				c.config.Name(), task.event.Topic, task.event.Offset, task.event.Partition, err)
 		}
+		// 处理失败，不标记 offset → Kafka 会重投
+	} else {
+		// 处理成功，标记 offset
+		task.session.MarkMessage(task.msg, "")
 	}
 }
 
@@ -342,21 +355,21 @@ func (c *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim saram
 				event.EventType = et
 			}
 
-			// 发送到 worker channel
+			// 发送到 worker channel（不在这里标记 offset，由 Worker 处理成功后标记）
 			if c.ordered {
 				// 有序模式：按 key hash 路由到专属 Worker channel
 				idx := routeKey(event.Key, len(c.orderedChs))
 				select {
-				case c.orderedChs[idx] <- event:
-					session.MarkMessage(msg, "")
+				case c.orderedChs[idx] <- &consumeTask{event: event, session: session, msg: msg}:
+					// offset 由 Worker 处理成功后标记
 				case <-c.ctx.Done():
 					return nil
 				}
 			} else {
 				// 无序模式：发送到共享 tasks channel
 				select {
-				case c.tasks <- event:
-					session.MarkMessage(msg, "")
+				case c.tasks <- &consumeTask{event: event, session: session, msg: msg}:
+					// offset 由 Worker 处理成功后标记
 				case <-c.ctx.Done():
 					return nil
 				}

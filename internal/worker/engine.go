@@ -16,14 +16,15 @@ import (
 // 负责创建 Consumer、管理注册表、协调启动和关闭
 // 支持多 Consumer 模式：每个 HandlerConfig 对应一个独立的 Consumer 实例
 type Engine struct {
-	consumers []*Consumer
-	registry  *Registry
-	relay     *Relay
-	config    conf.WorkerConfig
-	ctx       context.Context
-	cancel    context.CancelFunc
-	mu        sync.Mutex
-	started   bool
+	consumers      []*Consumer
+	consumerGroups []sarama.ConsumerGroup // 每个 Consumer 独立的 ConsumerGroup 实例
+	registry       *Registry
+	relay          *Relay
+	config         conf.WorkerConfig
+	ctx            context.Context
+	cancel         context.CancelFunc
+	mu             sync.Mutex
+	started        bool
 }
 
 // NewEngine 根据 WorkerConfig 创建 Worker 引擎
@@ -64,22 +65,19 @@ func (e *Engine) Start() error {
 		return fmt.Errorf("worker group-id is required")
 	}
 
-	// 创建 sarama ConsumerGroup（所有 Consumer 共享同一个 group）
+	// 创建 sarama ConsumerGroup 配置
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{sarama.NewBalanceStrategyRoundRobin()}
 	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetNewest
 	saramaConfig.Consumer.Offsets.AutoCommit.Enable = false // 手动提交 offset
-
-	group, err := sarama.NewConsumerGroup(global.CONFIG.Kafka.Hosts, e.config.GroupId, saramaConfig)
-	if err != nil {
-		return fmt.Errorf("创建 ConsumerGroup 失败: %w", err)
-	}
 
 	// 解析全局 handler-timeout 配置
 	handlerTimeout := parseHandlerTimeout(e.config.HandlerTimeout)
 
 	if len(e.config.Handlers) > 0 {
 		// 新模式：per-Handler 独立 Consumer
+		// 每个 Consumer 创建独立的 ConsumerGroup 实例（共享 group-id），
+		// 因为 sarama.ConsumerGroup 同一时间只能有一个活跃的 Consume() 调用
 		for _, h := range e.config.Handlers {
 			config := ConsumerConfig{
 				Topic:          h.Topic,
@@ -106,7 +104,18 @@ func (e *Engine) Start() error {
 				}
 			}
 
-			consumer := NewConsumerWithConfig(group, config, e.registry)
+			// 为每个 Consumer 创建独立的 ConsumerGroup
+			consumerGroup, err := sarama.NewConsumerGroup(global.CONFIG.Kafka.Hosts, e.config.GroupId, saramaConfig)
+			if err != nil {
+				// 关闭已创建的 ConsumerGroup
+				for _, cg := range e.consumerGroups {
+					cg.Close()
+				}
+				return fmt.Errorf("创建 ConsumerGroup 失败 (topic=%s): %w", h.Topic, err)
+			}
+			e.consumerGroups = append(e.consumerGroups, consumerGroup)
+
+			consumer := NewConsumerWithConfig(consumerGroup, config, e.registry)
 			e.consumers = append(e.consumers, consumer)
 
 			global.LOG.Infof("[worker] 创建 Consumer: topic=%s, concurrency=%d, buffer-size=%d",
@@ -123,6 +132,12 @@ func (e *Engine) Start() error {
 			concurrency = defaultConcurrency
 			global.LOG.Warn("[worker] concurrency 未配置或为 0，使用默认值 1")
 		}
+
+		group, err := sarama.NewConsumerGroup(global.CONFIG.Kafka.Hosts, e.config.GroupId, saramaConfig)
+		if err != nil {
+			return fmt.Errorf("创建 ConsumerGroup 失败: %w", err)
+		}
+		e.consumerGroups = append(e.consumerGroups, group)
 
 		consumer := NewConsumerWithConfig(group, ConsumerConfig{
 			Topics:         e.config.Topics,
@@ -178,15 +193,14 @@ func (e *Engine) Stop() error {
 	// 3. 取消 Engine context
 	e.cancel()
 
-	// 4. 关闭底层 ConsumerGroup 连接
-	// 所有 Consumer 共享同一个 ConsumerGroup，只需关闭一次
-	// 取第一个 Consumer 的 group 引用即可
-	if len(e.consumers) > 0 && e.consumers[0].group != nil {
-		if err := e.consumers[0].group.Close(); err != nil {
+	// 4. 关闭所有 ConsumerGroup 连接
+	// 每个 Consumer 拥有独立的 ConsumerGroup，需逐个关闭
+	for _, cg := range e.consumerGroups {
+		if err := cg.Close(); err != nil {
 			global.LOG.Errorf("[worker] ConsumerGroup 关闭失败: %v", err)
-			return err
 		}
 	}
+	e.consumerGroups = nil
 
 	e.started = false
 	global.LOG.Info("[worker] Engine 已关闭")

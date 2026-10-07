@@ -47,8 +47,8 @@ github.com/HeRedBo/pkg/httpclient v0.0.0-20250518092132-658893059cf6 h1:7rQkeadf
 github.com/HeRedBo/pkg/httpclient v0.0.0-20250518092132-658893059cf6/go.mod h1:pDOejAu4AqFB+AviWkhBpuMIsOlDd/32V6+rlUTEK5I=
 github.com/HeRedBo/pkg/logx v0.0.0-20260830141419-92011b3cc7d8 h1:GB7oiUSlKQiiHuhiuhFTbC5Ox1kmQgELTnYUm057c/Y=
 github.com/HeRedBo/pkg/logx v0.0.0-20260830141419-92011b3cc7d8/go.mod h1:qHCuQVGrlssRyQSKt9hr8vIE/amTbNcpUUUbz0UyYOU=
-github.com/HeRedBo/pkg/mq v0.0.0-20260831081433-225bdd1ff04b h1:qezACoQQospGSutjj5ioFhvZYhVa87et9OaT67YL2fA=
-github.com/HeRedBo/pkg/mq v0.0.0-20260831081433-225bdd1ff04b/go.mod h1:PMgtekjja78iCm95OCbJMQyDI7rlh8rXKDeUoxQvlUw=
+github.com/HeRedBo/pkg/mq v0.0.0-20260907103230-646afca3dfa7 h1:t4vKOooTzeC8rO7HXinBYfoU8YXk3aLPwW+uHEHGsbQ=
+github.com/HeRedBo/pkg/mq v0.0.0-20260907103230-646afca3dfa7/go.mod h1:PMgtekjja78iCm95OCbJMQyDI7rlh8rXKDeUoxQvlUw=
 github.com/HeRedBo/pkg/shutdown v0.0.0-20250421154535-ac0072629fbe h1:40tDNBdEO474/W6DD/LCVEHMRQNQF1JaE4x6j19npJc=
 github.com/HeRedBo/pkg/shutdown v0.0.0-20250421154535-ac0072629fbe/go.mod h1:CuixbHhY0Cwa6spjSctETWxuj3nOH0PpT6uSXtX/H1M=
 github.com/HeRedBo/pkg/sign v0.0.0-20250521224933-16789602bd01 h1:tZ7J/Jq3wuBrP3N8gi+7w3mJusywVmc7esippCco1g4=

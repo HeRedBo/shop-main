@@ -8,6 +8,7 @@ import (
 	"shop/pkg/global"
 	"shop/pkg/jwt"
 	"shop/pkg/logging"
+	"sync"
 
 	"github.com/HeRedBo/pkg/cache"
 	"github.com/HeRedBo/pkg/db"
@@ -133,7 +134,7 @@ func BootstrapWith(configPath string, opts ...Option) {
 
 	// 2. 初始化日志管理器
 	logging.NewManager(logging.NewLogConfig(global.CONFIG.Zap))
-	global.LOG = global.GetLogger("app")
+	global.LOG = global.GetLogger("worker")
 
 	// 3. 初始化 Redis
 	initRedis()
@@ -167,52 +168,79 @@ func BootstrapWith(configPath string, opts ...Option) {
 	}
 }
 
+// shutdownOnce 确保 Shutdown 仅执行一次，防止重复关闭导致 panic
+var shutdownOnce sync.Once
+
 // Shutdown 优雅关闭已初始化的基础组件（Kafka→ConsumerGroup→Redis→MySQL→日志刷新）
 // 注意：HTTP Server 的关闭由各入口自行管理，不在此处处理
 func Shutdown() {
+	shutdownOnce.Do(func() {
+		doShutdown()
+	})
+}
+
+// doShutdown 执行实际的资源关闭逻辑
+func doShutdown() {
 	// 关闭 Kafka ConsumerGroup（仅当已初始化时）
 	if componentFlags.kafkaConsumer {
-		if global.KafkaConsumerGroup != nil {
-			if err := global.KafkaConsumerGroup.Close(); err != nil {
-				global.LOG.Error("kafka consumer group close error", err)
+		safeClose("kafka consumer group", func() error {
+			if global.KafkaConsumerGroup != nil {
+				return global.KafkaConsumerGroup.Close()
 			}
-		}
+			return nil
+		})
 	}
 
 	// 关闭 Kafka Producer（仅当已初始化时）
+	// 使用 recover 防御 mq 包 SyncProducer.Close() 内部 close(ch) 非幂等导致的 panic
 	if componentFlags.kafka {
-		if p := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer); p != nil {
-			if err := p.Close(); err != nil {
-				global.LOG.Error("kafka close error", err, "client", mq.DefaultKafkaSyncProducer)
+		safeClose("kafka sync producer", func() error {
+			if p := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer); p != nil {
+				return p.Close()
 			}
-		}
+			return nil
+		})
 	}
 
 	// 关闭 Redis（仅当已初始化时）
 	if componentFlags.redis {
 		// 关闭 Pub/Sub 专用客户端
-		if global.RedisClient != nil {
-			if err := global.RedisClient.Close(); err != nil {
-				global.LOG.Errorf("redis pub/sub client close error: %v", err)
+		safeClose("redis pub/sub client", func() error {
+			if global.RedisClient != nil {
+				return global.RedisClient.Close()
 			}
-		}
+			return nil
+		})
 		// 关闭 cache 封装层客户端
-		if r := cache.GetRedisClient(cache.DefaultRedisClient); r != nil {
-			if err := r.Close(); err != nil {
-				global.LOG.Error("redis close error", err, "client", cache.DefaultRedisClient)
+		safeClose("redis cache client", func() error {
+			if r := cache.GetRedisClient(cache.DefaultRedisClient); r != nil {
+				return r.Close()
 			}
-		}
+			return nil
+		})
 	}
 
 	// 关闭 MySQL（仅当已初始化时）
 	if componentFlags.mysql {
-		if err := db.CloseMysqlClient(db.DefaultClient); err != nil {
-			global.LOG.Error("CloseMysqlClient error", err, "client", db.DefaultClient)
-		}
+		safeClose("mysql", func() error {
+			return db.CloseMysqlClient(db.DefaultClient)
+		})
 	}
 
 	// 刷新所有 logger 缓冲
 	logging.SyncAll()
+}
+
+// safeClose 安全关闭资源，捕获 Close() 内部可能发生的 panic（如 "close of closed channel"）
+func safeClose(name string, closeFn func() error) {
+	defer func() {
+		if r := recover(); r != nil {
+			global.LOG.Errorf("[%s] close panic recovered: %v", name, r)
+		}
+	}()
+	if err := closeFn(); err != nil {
+		global.LOG.Errorf("[%s] close error: %v", name, err)
+	}
 }
 
 // initRedis 初始化 Redis 连接

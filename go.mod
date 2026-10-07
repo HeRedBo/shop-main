@@ -8,7 +8,7 @@ require (
 	github.com/HeRedBo/pkg/file v1.0.0
 	github.com/HeRedBo/pkg/httpclient v0.0.0-20250518092132-658893059cf6
 	github.com/HeRedBo/pkg/logx v0.0.0-20260830141419-92011b3cc7d8
-	github.com/HeRedBo/pkg/mq v0.0.0-20260831081433-225bdd1ff04b
+	github.com/HeRedBo/pkg/mq v0.0.0-20260907103230-646afca3dfa7
 	github.com/HeRedBo/pkg/shutdown v0.0.0-20250421154535-ac0072629fbe
 	github.com/HeRedBo/pkg/sign v0.0.0-20250521224933-16789602bd01
 	github.com/HeRedBo/pkg/strutil v0.0.0-20250518092132-658893059cf6
@@ -22,6 +22,7 @@ require (
 	github.com/go-pay/gopay v1.5.112
 	github.com/go-pay/util v0.0.4
 	github.com/go-redis/redis/v7 v7.4.1
+	github.com/google/uuid v1.6.0
 	github.com/gookit/goutil v0.6.18
 	github.com/jinzhu/copier v0.4.0
 	github.com/mojocn/base64Captcha v1.3.8
@@ -83,7 +84,6 @@ require (
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gookit/color v1.6.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect

@@ -5,16 +5,23 @@ import (
 	"shop/pkg/global"
 )
 
-// RegisterAll 注册所有事件处理器到 Worker Engine
-// 按 topic 注册对应的业务 Handler
+// RegisterAll 注册所有事件处理器
+// 当前使用 DemoHandler 进行基础流程验证
+// 验证完成后切换为 ProductHandler / OrderHandler
 func RegisterAll(engine *worker.Engine) {
 	registry := engine.GetRegistry()
 
-	// 注册商品事件 Handler
-	registry.Register(worker.TopicProductEvents, NewProductHandler())
+	// ===== 验证模式：使用 DemoHandler =====
+	//demo := NewDemoHandler()
+	//registry.Register(worker.TopicProductEvents, demo)
+	//registry.Register(worker.TopicOrderEvents, demo)
+	//
+	//global.LOG.Info("[Worker] Demo 处理器注册完成（验证模式）")
 
-	// 注册订单事件 Handler
-	registry.Register(worker.TopicOrderEvents, NewOrderHandler())
-
-	global.LOG.Infof("[Worker] 事件处理器注册完成，topics: [%s, %s]", worker.TopicProductEvents, worker.TopicOrderEvents)
+	// ===== 生产模式：使用真实 Handler（验证完成后启用） =====
+	productHandler := NewProductHandler()
+	orderHandler := NewOrderHandler()
+	registry.Register(worker.TopicProductEvents, productHandler)
+	registry.Register(worker.TopicOrderEvents, orderHandler)
+	global.LOG.Info("[Worker] 事件处理器注册完成")
 }
