@@ -4,16 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"shop/internal/models"
 	"shop/internal/worker"
+	orderEnum "shop/pkg/enums/order"
 	"shop/pkg/global"
+
+	"github.com/HeRedBo/pkg/mq"
+	"github.com/IBM/sarama"
 )
 
 // OrderHandler 订单事件处理器
-// 处理 order.created / order.paid / order.shipped / order.completed / order.canceled / order.updated 事件
-// 当前阶段：幂等检查 + 日志记录（后续可扩展为库存扣减、通知发货、积分计算等）
+// 处理 order.created / order.updated / order.deleted 事件
+// 转发到 Kafka 供下游消费
 // 注意：event_id / event_type / aggregate_id 由 Relay 写入 Kafka Headers，必定存在
 type OrderHandler struct{}
 
@@ -59,24 +64,18 @@ func (h *OrderHandler) Handle(ctx context.Context, event *worker.Event) error {
 	switch eventType {
 	case "order.created":
 		global.LOG.Infof("[OrderHandler] 订单创建事件: order_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
-
-	case "order.paid":
-		global.LOG.Infof("[OrderHandler] 订单支付事件: order_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
-
-	case "order.shipped":
-		global.LOG.Infof("[OrderHandler] 订单发货事件: order_id=%s", aggregateId)
-
-	case "order.completed":
-		global.LOG.Infof("[OrderHandler] 订单完成事件: order_id=%s", aggregateId)
-
-	case "order.canceled":
-		global.LOG.Infof("[OrderHandler] 订单取消事件: order_id=%s", aggregateId)
+		h.publishToKafka(payload, orderEnum.OperationCreate)
 
 	case "order.updated":
 		global.LOG.Infof("[OrderHandler] 订单更新事件: order_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
+		h.publishToKafka(payload, orderEnum.OperationUpdate)
+
+	case "order.deleted":
+		global.LOG.Infof("[OrderHandler] 订单删除事件: order_id=%s", aggregateId)
+		h.publishToKafka(payload, orderEnum.OperationDelete)
 
 	default:
-		global.LOG.Warnf("[OrderHandler] 未知事件类型: event_type=%s, event_id=%s", eventType, eventId)
+		global.LOG.Warnf("[OrderHandler] 未知/未处理事件类型: event_type=%s, event_id=%s", eventType, eventId)
 	}
 
 	// 5. 写入幂等记录
@@ -98,4 +97,70 @@ func (h *OrderHandler) Handle(ctx context.Context, event *worker.Event) error {
 
 	global.LOG.Infof("[OrderHandler] 事件处理完成: event_id=%s event_type=%s", eventId, eventType)
 	return nil
+}
+
+// publishToKafka 将事件转发到 shop-product topic，供下游消费
+// 注意：订单 aggregateId 是 OrderId（string），旧代码使用 Uid 作为 Kafka Key
+// 错误不中断主流程，仅记录日志
+func (h *OrderHandler) publishToKafka(payload map[string]interface{}, operation string) {
+	// 1. 从 payload 中提取 Uid 作为 Kafka Key（与旧代码行为一致）
+	uidVal, ok := payload["uid"]
+	if !ok {
+		global.LOG.Errorf("[OrderHandler] payload 中缺少 uid 字段，跳过转发: operation=%s", operation)
+		return
+	}
+	// JSON 反序列化数字为 float64
+	uidFloat, ok := uidVal.(float64)
+	if !ok {
+		global.LOG.Errorf("[OrderHandler] uid 类型断言失败: %T", uidVal)
+		return
+	}
+	uid := int64(uidFloat)
+
+	// 2. 将 payload 反序列化为 StoreOrder
+	orderData, err := json.Marshal(payload)
+	if err != nil {
+		global.LOG.Errorf("[OrderHandler] payload 序列化失败: %v", err)
+		return
+	}
+
+	var storeOrder models.StoreOrder
+	if err := json.Unmarshal(orderData, &storeOrder); err != nil {
+		global.LOG.Errorf("[OrderHandler] payload 反序列化为 StoreOrder 失败: %v", err)
+		return
+	}
+
+	// 3. 构造 OrderMsg
+	orderMsg := models.OrderMsg{
+		Operation:  operation,
+		StoreOrder: &storeOrder,
+	}
+
+	msgBytes, err := json.Marshal(orderMsg)
+	if err != nil {
+		global.LOG.Errorf("[OrderHandler] OrderMsg 序列化失败: %v", err)
+		return
+	}
+
+	// 4. 发送到 Kafka
+	producer := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer)
+	if producer == nil {
+		global.LOG.Error("[OrderHandler] Kafka Producer 未初始化，跳过转发")
+		return
+	}
+
+	msg := &sarama.ProducerMessage{
+		Topic: orderEnum.Topic,
+		Key:   mq.KafkaMsgValueStrEncoder(strconv.FormatInt(uid, 10)),
+		Value: mq.KafkaMsgValueEncoder(msgBytes),
+	}
+
+	partition, offset, err := producer.Send(msg)
+	if err != nil {
+		global.LOG.Errorf("[OrderHandler] 转发到 Kafka 失败: operation=%s, order_id=%s, err=%v", operation, storeOrder.OrderId, err)
+		return
+	}
+
+	global.LOG.Infof("[OrderHandler] 转发成功: operation=%s, order_id=%s, uid=%d, partition=%d, offset=%d",
+		operation, storeOrder.OrderId, uid, partition, offset)
 }
