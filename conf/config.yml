@@ -77,11 +77,11 @@ worker:
   # ===== 方式一：per-Handler 独立配置（推荐） =====
   handlers:
     - topic: "shop-order-events"
-      concurrency: 20
+      concurrency: 2
       ordered: false
       buffer-size: 2000
     - topic: "shop-product-events"
-      concurrency: 10
+      concurrency: 2
       ordered: false
       buffer-size: 1000
 
