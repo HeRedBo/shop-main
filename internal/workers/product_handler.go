@@ -4,16 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"shop/internal/models"
+	"shop/internal/worker"
+	"shop/pkg/enums/product"
+	"shop/pkg/global"
+	"strconv"
 	"strings"
 	"time"
 
-	"shop/internal/models"
-	"shop/internal/worker"
-	"shop/pkg/global"
+	"github.com/HeRedBo/pkg/mq"
+	"github.com/IBM/sarama"
 )
 
 // ProductHandler 商品事件处理器
-// 处理 product.created / product.updated / product.deleted 事件
+// 处理 product.created / product.updated / product.deleted / product.on_sale / product.un_sale 事件
+// 事件分类职责在 Observer 层：通过 dirty tracking 精确判断 is_show 变化，
+// 发出 product.on_sale / product.un_sale / product.updated；
+// Handler 中 product.updated 仍保留 resolveUpdateOperation 兜底判断（应对 dirty tracking 不可用的场景）。
 // 当前阶段：幂等检查 + 日志记录（后续可扩展为更新 ES 索引、刷新缓存等）
 // 注意：event_id / event_type / aggregate_id 由 Relay 写入 Kafka Headers，必定存在
 type ProductHandler struct{}
@@ -60,12 +67,25 @@ func (h *ProductHandler) Handle(ctx context.Context, event *worker.Event) error 
 	switch eventType {
 	case "product.created":
 		global.LOG.Infof("[ProductHandler] 商品创建事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
+		h.publishToKafka(aggregateId, product.OperationCreate, payload)
+
+	case "product.on_sale":
+		global.LOG.Infof("[ProductHandler] 商品上架事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
+		h.publishToKafka(aggregateId, product.OperationOnSale, payload)
+
+	case "product.un_sale":
+		global.LOG.Infof("[ProductHandler] 商品下架事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
+		h.publishToKafka(aggregateId, product.OperationUnSale, payload)
 
 	case "product.updated":
 		global.LOG.Infof("[ProductHandler] 商品更新事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
+		// fallback：Observer 层 dirty tracking 不可用时，仍通过 is_show 值兜底判断
+		operation := resolveUpdateOperation(payload)
+		h.publishToKafka(aggregateId, operation, payload)
 
 	case "product.deleted":
 		global.LOG.Infof("[ProductHandler] 商品删除事件: aggregate_id=%s", aggregateId)
+		h.publishToKafka(aggregateId, product.OperationDelete, payload)
 
 	default:
 		global.LOG.Warnf("[ProductHandler] 未知事件类型: event_type=%s, event_id=%s", eventType, eventId)
@@ -110,7 +130,88 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// mapKeys 获取 map 的所有 key
+// publishToKafka 将事件转发到 shop-product topic，供下游（如 ES 同步）消费
+// 错误不中断主流程，仅记录日志
+func (h *ProductHandler) publishToKafka(aggregateId string, operation string, payload map[string]interface{}) {
+	id, err := strconv.ParseInt(aggregateId, 10, 64)
+	if err != nil {
+		global.LOG.Errorf("[ProductHandler] aggregate_id 转 int64 失败: id=%s, err=%v", aggregateId, err)
+		return
+	}
+
+	// 构造 ProductMsg：将 payload 反序列化为 StoreProduct，再包装为 ProductMsg
+	productData, err := json.Marshal(payload)
+	if err != nil {
+		global.LOG.Errorf("[ProductHandler] payload 序列化失败: %v", err)
+		return
+	}
+
+	var storeProduct models.StoreProduct
+	if err := json.Unmarshal(productData, &storeProduct); err != nil {
+		global.LOG.Errorf("[ProductHandler] payload 反序列化为 StoreProduct 失败: %v", err)
+		return
+	}
+
+	productMsg := models.ProductMsg{
+		Operation:    operation,
+		StoreProduct: &storeProduct,
+	}
+
+	msgBytes, err := json.Marshal(productMsg)
+	if err != nil {
+		global.LOG.Errorf("[ProductHandler] ProductMsg 序列化失败: %v", err)
+		return
+	}
+
+	producer := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer)
+	if producer == nil {
+		global.LOG.Error("[ProductHandler] Kafka Producer 未初始化，跳过转发")
+		return
+	}
+
+	msg := &sarama.ProducerMessage{
+		Topic: product.Topic,
+		Key:   mq.KafkaMsgValueStrEncoder(strconv.FormatInt(id, 10)),
+		Value: mq.KafkaMsgValueEncoder(msgBytes),
+	}
+
+	partition, offset, err := producer.Send(msg)
+	if err != nil {
+		global.LOG.Errorf("[ProductHandler] 转发到 Kafka 失败: operation=%s, aggregate_id=%s, err=%v", operation, aggregateId, err)
+		return
+	}
+
+	global.LOG.Infof("[ProductHandler] 转发成功: operation=%s, aggregate_id=%s, partition=%d, offset=%d",
+		operation, aggregateId, partition, offset)
+}
+
+// resolveUpdateOperation 根据 payload 中的 is_show 字段判断更新操作类型（fallback）
+// 正常情况下 Observer 层已通过 dirty tracking 精确分类为 product.on_sale / product.un_sale，
+// 此函数仅在 product.updated 事件到达 Handler 时作为兜底（如 dirty tracking 不可用的批量更新场景）。
+// is_show=1 → on_sale，is_show=0 → un_sale，其他 → update
+func resolveUpdateOperation(payload map[string]interface{}) string {
+	val, ok := payload["is_show"]
+	if !ok || val == nil {
+		return product.OperationUpdate
+	}
+
+	// JSON 反序列化数字默认为 float64
+	showFloat, ok := val.(float64)
+	if !ok {
+		return product.OperationUpdate
+	}
+
+	switch int(showFloat) {
+	case 1:
+		return product.OperationOnSale
+	case 0:
+		return product.OperationUnSale
+	default:
+		return product.OperationUpdate
+	}
+}
+
+// mapKeys 获取 map 所有 key
 func mapKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
