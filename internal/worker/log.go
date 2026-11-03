@@ -1,8 +1,9 @@
 package worker
 
 import (
-	"go.uber.org/zap"
 	"shop/pkg/global"
+
+	"go.uber.org/zap"
 )
 
 // Logger 返回 worker 模块的独立 logger

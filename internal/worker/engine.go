@@ -23,7 +23,7 @@ type Engine struct {
 	delayScheduler *DelayScheduler
 
 	// 保留原有字段（向后兼容）
-	runners  []Runnable  // Kafka/Redis 等多种任务实例
+	runners  []Runnable // Kafka/Redis 等多种任务实例
 	registry *Registry
 	relay    *Relay
 	config   conf.WorkerConfig

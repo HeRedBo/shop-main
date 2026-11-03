@@ -120,22 +120,22 @@ type WorkerConfig struct {
 
 // RedisStreamConfig Redis Stream 消费者配置
 type RedisStreamConfig struct {
-	Enabled       bool                   `mapstructure:"enabled" yaml:"enabled"`             // 是否启用 Redis Stream 消费者
-	Streams       []RedisStreamItemConfig `mapstructure:"streams" yaml:"streams"`             // 消费的 Stream 列表
-	Concurrency   int                    `mapstructure:"concurrency" yaml:"concurrency"`     // 全局默认并发数
-	BufferSize    int                    `mapstructure:"buffer-size" yaml:"buffer-size"`     // 全局默认缓冲大小
-	BlockTimeout  string                 `mapstructure:"block-timeout" yaml:"block-timeout"` // XReadGroup BLOCK 超时
-	HandlerTimeout string               `mapstructure:"handler-timeout" yaml:"handler-timeout"` // 单条消息处理超时
-	MaxRetries    int                    `mapstructure:"max-retries" yaml:"max-retries"`     // Pending 消息最大重试次数
+	Enabled        bool                    `mapstructure:"enabled" yaml:"enabled"`                 // 是否启用 Redis Stream 消费者
+	Streams        []RedisStreamItemConfig `mapstructure:"streams" yaml:"streams"`                 // 消费的 Stream 列表
+	Concurrency    int                     `mapstructure:"concurrency" yaml:"concurrency"`         // 全局默认并发数
+	BufferSize     int                     `mapstructure:"buffer-size" yaml:"buffer-size"`         // 全局默认缓冲大小
+	BlockTimeout   string                  `mapstructure:"block-timeout" yaml:"block-timeout"`     // XReadGroup BLOCK 超时
+	HandlerTimeout string                  `mapstructure:"handler-timeout" yaml:"handler-timeout"` // 单条消息处理超时
+	MaxRetries     int                     `mapstructure:"max-retries" yaml:"max-retries"`         // Pending 消息最大重试次数
 }
 
 // RedisStreamItemConfig 单个 Redis Stream 的配置
 type RedisStreamItemConfig struct {
-	StreamKey     string `mapstructure:"stream-key" yaml:"stream-key"`           // Redis Stream key
-	ConsumerGroup string `mapstructure:"consumer-group" yaml:"consumer-group"`   // 消费组名称
-	ConsumerName  string `mapstructure:"consumer-name" yaml:"consumer-name"`     // 消费者名称
-	Concurrency   int    `mapstructure:"concurrency" yaml:"concurrency"`         // Worker Pool 并发数（0 使用全局默认）
-	BufferSize    int    `mapstructure:"buffer-size" yaml:"buffer-size"`         // tasks channel 缓冲大小（0 使用全局默认）
+	StreamKey     string `mapstructure:"stream-key" yaml:"stream-key"`         // Redis Stream key
+	ConsumerGroup string `mapstructure:"consumer-group" yaml:"consumer-group"` // 消费组名称
+	ConsumerName  string `mapstructure:"consumer-name" yaml:"consumer-name"`   // 消费者名称
+	Concurrency   int    `mapstructure:"concurrency" yaml:"concurrency"`       // Worker Pool 并发数（0 使用全局默认）
+	BufferSize    int    `mapstructure:"buffer-size" yaml:"buffer-size"`       // tasks channel 缓冲大小（0 使用全局默认）
 }
 
 // ProcessConfig 单个 Process 的配置（多队列模式）
