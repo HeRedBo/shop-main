@@ -194,7 +194,7 @@ func (r *Relay) scanAndDeliver() {
 	// 1. 扫描即时消息（Kafka）：queue_type=kafka 且 execute_at IS NULL
 	r.scanAndDeliverByType(models.QueueTypeKafka, true)
 
-	// 2. 扫描延迟消息（Redis）：queue_type=redis 且 execute_at <= NOW()
+	// 2. 扫描 Redis 消息：queue_type=redis 且（即时消息 execute_at IS NULL OR 延迟消息 execute_at <= NOW()）
 	r.scanAndDeliverByType(models.QueueTypeRedis, false)
 }
 
@@ -208,8 +208,8 @@ func (r *Relay) scanAndDeliverByType(queueType string, immediateOnly bool) {
 		// Kafka 即时消息：execute_at IS NULL
 		query = query.Where("execute_at IS NULL")
 	} else {
-		// Redis 延迟消息：execute_at <= NOW()
-		query = query.Where("execute_at IS NOT NULL AND execute_at <= ?", time.Now())
+		// Redis 消息：即时消息（execute_at IS NULL）+ 到期的延迟消息（execute_at <= NOW）
+		query = query.Where("(execute_at IS NULL OR execute_at <= ?)", time.Now())
 	}
 
 	err := query.Order("created_at ASC").

@@ -95,7 +95,7 @@ worker:
   default-concurrency: 10
   default-buffer-size: 1000
 
-  poll-interval: "2s"
+  poll-interval: "20s"
   max-retries: 5
   retry-base-delay: "1s"
   relay-batch-size: 100

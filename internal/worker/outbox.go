@@ -131,6 +131,22 @@ func WriteDelayOutbox(tx *gorm.DB, aggregateId, eventType, topic, partitionKey s
 	return nil
 }
 
+// WriteRedisOutbox 写入即时 Redis Stream 消息（非延迟）
+// queue_type="redis", execute_at=NULL
+// 消息会被 Relay 立即扫描并投递到对应的 Redis Stream
+func WriteRedisOutbox(tx *gorm.DB, aggregateId, eventType, topic, partitionKey string, payload interface{}) error {
+	// writeOutboxWithId() 写入 event_outbox，queue_type="redis"，execute_at 为 nil（即时消息）
+	eventId := uuid.New().String()
+	err := writeOutboxWithId(tx, eventId, aggregateId, eventType, topic, partitionKey, payload, models.QueueTypeRedis, nil)
+	if err != nil {
+		return err
+	}
+
+	// 即时消息不走 Sorted Set，仅依赖 notifyRelay 通知 Relay 立即扫描
+	// notifyRelay 已在 writeOutboxWithId 内部异步调用，无需重复
+	return nil
+}
+
 // notifyRelay 通过 Redis Pub/Sub 通知 Relay 有新 outbox 记录
 func notifyRelay(eventId string) {
 	if global.RedisClient == nil {
