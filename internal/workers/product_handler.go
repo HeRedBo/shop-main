@@ -32,19 +32,22 @@ func NewProductHandler() *ProductHandler {
 
 // Handle 处理商品事件
 // 流程：提取元数据 → 幂等检查 → 业务逻辑 → 记录幂等
-func (h *ProductHandler) Handle(ctx context.Context, event *worker.Event) error {
+func (h *ProductHandler) Handle(ctx context.Context, msg *worker.Message) error {
 	// 1. 从 Kafka Headers 中提取元数据（Relay 投递时必定设置）
-	eventId := event.Headers["event_id"]
-	eventType := event.EventType // consumer 已从 headers["event_type"] 中提取
-	aggregateId := event.Headers["aggregate_id"]
+	eventId := msg.Headers["event_id"]
+	eventType := msg.EventType // consumer 已从 headers["event_type"] 中提取
+	aggregateId := msg.Headers["aggregate_id"]
+
+	// 从 RawOffset 中提取 Kafka offset（仅用于日志）
+	offset := extractKafkaOffset(msg.RawOffset)
 
 	if eventId == "" {
-		global.LOG.Warnf("[ProductHandler] 消息缺少 event_id header，跳过: topic=%s offset=%d", event.Topic, event.Offset)
+		Logger().Warnf("[ProductHandler] 消息缺少 event_id header，跳过: topic=%s offset=%d", msg.Topic, offset)
 		return nil
 	}
 
-	global.LOG.Infof("[ProductHandler] 收到事件: event_id=%s event_type=%s aggregate_id=%s offset=%d",
-		eventId, eventType, aggregateId, event.Offset)
+	Logger().Infof("[ProductHandler] 收到事件: event_id=%s event_type=%s aggregate_id=%s offset=%d",
+		eventId, eventType, aggregateId, offset)
 
 	// 2. 幂等检查：查询 processed_events 表是否已处理该 event_id
 	var count int64
@@ -52,43 +55,43 @@ func (h *ProductHandler) Handle(ctx context.Context, event *worker.Event) error 
 		return fmt.Errorf("查询幂等记录失败: %w", err)
 	}
 	if count > 0 {
-		global.LOG.Infof("[ProductHandler] 事件已处理，跳过: event_id=%s", eventId)
+		Logger().Infof("[ProductHandler] 事件已处理，跳过: event_id=%s", eventId)
 		return nil
 	}
 
 	// 3. 解析 payload（商品业务数据）
 	var payload map[string]interface{}
-	if err := json.Unmarshal(event.Value, &payload); err != nil {
-		global.LOG.Errorf("[ProductHandler] 解析 payload 失败: %v, 原文: %s", err, truncate(string(event.Value), 200))
+	if err := json.Unmarshal(msg.Value, &payload); err != nil {
+		Logger().Errorf("[ProductHandler] 解析 payload 失败: %v, 原文: %s", err, truncate(string(msg.Value), 200))
 		return fmt.Errorf("解析 payload 失败: %w", err)
 	}
 
 	// 4. 根据 event_type 执行业务逻辑
 	switch eventType {
 	case "product.created":
-		global.LOG.Infof("[ProductHandler] 商品创建事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
+		Logger().Infof("[ProductHandler] 商品创建事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
 		h.publishToKafka(aggregateId, product.OperationCreate, payload)
 
 	case "product.on_sale":
-		global.LOG.Infof("[ProductHandler] 商品上架事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
+		Logger().Infof("[ProductHandler] 商品上架事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
 		h.publishToKafka(aggregateId, product.OperationOnSale, payload)
 
 	case "product.un_sale":
-		global.LOG.Infof("[ProductHandler] 商品下架事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
+		Logger().Infof("[ProductHandler] 商品下架事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
 		h.publishToKafka(aggregateId, product.OperationUnSale, payload)
 
 	case "product.updated":
-		global.LOG.Infof("[ProductHandler] 商品更新事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
+		Logger().Infof("[ProductHandler] 商品更新事件: aggregate_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
 		// fallback：Observer 层 dirty tracking 不可用时，仍通过 is_show 值兜底判断
 		operation := resolveUpdateOperation(payload)
 		h.publishToKafka(aggregateId, operation, payload)
 
 	case "product.deleted":
-		global.LOG.Infof("[ProductHandler] 商品删除事件: aggregate_id=%s", aggregateId)
+		Logger().Infof("[ProductHandler] 商品删除事件: aggregate_id=%s", aggregateId)
 		h.publishToKafka(aggregateId, product.OperationDelete, payload)
 
 	default:
-		global.LOG.Warnf("[ProductHandler] 未知事件类型: event_type=%s, event_id=%s", eventType, eventId)
+		Logger().Warnf("[ProductHandler] 未知事件类型: event_type=%s, event_id=%s", eventType, eventId)
 	}
 
 	// 5. 写入幂等记录
@@ -102,13 +105,13 @@ func (h *ProductHandler) Handle(ctx context.Context, event *worker.Event) error 
 	if err := global.Db.Create(&processed).Error; err != nil {
 		// 唯一约束冲突 = 已被其他 worker 处理，不算错误
 		if isDuplicateKeyError(err) {
-			global.LOG.Infof("[ProductHandler] 幂等记录已存在（并发写入），跳过: event_id=%s", eventId)
+			Logger().Infof("[ProductHandler] 幂等记录已存在（并发写入），跳过: event_id=%s", eventId)
 			return nil
 		}
 		return fmt.Errorf("写入幂等记录失败: %w", err)
 	}
 
-	global.LOG.Infof("[ProductHandler] 事件处理完成: event_id=%s event_type=%s", eventId, eventType)
+	Logger().Infof("[ProductHandler] 事件处理完成: event_id=%s event_type=%s", eventId, eventType)
 	return nil
 }
 
@@ -130,25 +133,38 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+// extractKafkaOffset 从 Message.RawOffset 中提取 Kafka offset
+// RawOffset 是 interface{} 类型，Kafka 消费者中设置为 int64
+// 若类型不匹配或为 nil，返回 -1（仅用于日志，不影响业务逻辑）
+func extractKafkaOffset(rawOffset interface{}) int64 {
+	if rawOffset == nil {
+		return -1
+	}
+	if offset, ok := rawOffset.(int64); ok {
+		return offset
+	}
+	return -1
+}
+
 // publishToKafka 将事件转发到 shop-product topic，供下游（如 ES 同步）消费
 // 错误不中断主流程，仅记录日志
 func (h *ProductHandler) publishToKafka(aggregateId string, operation string, payload map[string]interface{}) {
 	id, err := strconv.ParseInt(aggregateId, 10, 64)
 	if err != nil {
-		global.LOG.Errorf("[ProductHandler] aggregate_id 转 int64 失败: id=%s, err=%v", aggregateId, err)
+		Logger().Errorf("[ProductHandler] aggregate_id 转 int64 失败: id=%s, err=%v", aggregateId, err)
 		return
 	}
 
 	// 构造 ProductMsg：将 payload 反序列化为 StoreProduct，再包装为 ProductMsg
 	productData, err := json.Marshal(payload)
 	if err != nil {
-		global.LOG.Errorf("[ProductHandler] payload 序列化失败: %v", err)
+		Logger().Errorf("[ProductHandler] payload 序列化失败: %v", err)
 		return
 	}
 
 	var storeProduct models.StoreProduct
 	if err := json.Unmarshal(productData, &storeProduct); err != nil {
-		global.LOG.Errorf("[ProductHandler] payload 反序列化为 StoreProduct 失败: %v", err)
+		Logger().Errorf("[ProductHandler] payload 反序列化为 StoreProduct 失败: %v", err)
 		return
 	}
 
@@ -159,13 +175,13 @@ func (h *ProductHandler) publishToKafka(aggregateId string, operation string, pa
 
 	msgBytes, err := json.Marshal(productMsg)
 	if err != nil {
-		global.LOG.Errorf("[ProductHandler] ProductMsg 序列化失败: %v", err)
+		Logger().Errorf("[ProductHandler] ProductMsg 序列化失败: %v", err)
 		return
 	}
 
 	producer := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer)
 	if producer == nil {
-		global.LOG.Error("[ProductHandler] Kafka Producer 未初始化，跳过转发")
+		Logger().Error("[ProductHandler] Kafka Producer 未初始化，跳过转发")
 		return
 	}
 
@@ -177,11 +193,11 @@ func (h *ProductHandler) publishToKafka(aggregateId string, operation string, pa
 
 	partition, offset, err := producer.Send(msg)
 	if err != nil {
-		global.LOG.Errorf("[ProductHandler] 转发到 Kafka 失败: operation=%s, aggregate_id=%s, err=%v", operation, aggregateId, err)
+		Logger().Errorf("[ProductHandler] 转发到 Kafka 失败: operation=%s, aggregate_id=%s, err=%v", operation, aggregateId, err)
 		return
 	}
 
-	global.LOG.Infof("[ProductHandler] 转发成功: operation=%s, aggregate_id=%s, partition=%d, offset=%d",
+	Logger().Infof("[ProductHandler] 转发成功: operation=%s, aggregate_id=%s, partition=%d, offset=%d",
 		operation, aggregateId, partition, offset)
 }
 

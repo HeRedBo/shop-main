@@ -4,16 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/HeRedBo/pkg/cache"
-	"github.com/HeRedBo/pkg/httpclient"
-	"github.com/HeRedBo/pkg/sign"
-	"github.com/HeRedBo/pkg/strutil"
-	"github.com/gin-gonic/gin"
-	"github.com/jinzhu/copier"
-	"github.com/segmentio/ksuid"
-	"github.com/shopspring/decimal"
-	"github.com/unknwon/com"
-	"gorm.io/gorm"
 	"net/http"
 	"net/url"
 	"shop/internal/models"
@@ -24,6 +14,7 @@ import (
 	orderDto "shop/internal/service/order_service/dto"
 	ordervo "shop/internal/service/order_service/vo"
 	userVO "shop/internal/service/wechat_user_service/vo"
+	"shop/internal/worker"
 	"shop/pkg/constant"
 	orderEnum "shop/pkg/enums/order"
 	"shop/pkg/global"
@@ -31,6 +22,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/HeRedBo/pkg/cache"
+	"github.com/HeRedBo/pkg/httpclient"
+	"github.com/HeRedBo/pkg/sign"
+	"github.com/HeRedBo/pkg/strutil"
+	"github.com/gin-gonic/gin"
+	"github.com/jinzhu/copier"
+	"github.com/segmentio/ksuid"
+	"github.com/shopspring/decimal"
+	"github.com/unknwon/com"
+	"gorm.io/gorm"
 )
 
 type Order struct {
@@ -366,8 +368,8 @@ func (o *Order) CreateOrder() (*models.StoreOrder, error) {
 		}
 	}
 
-	worker, _ := util.NewWorker(int64(1))
-	orderSn := worker.GetId()
+	idWorker, _ := util.NewWorker(int64(1))
+	orderSn := idWorker.GetId()
 	detailAddr := userAddress.Province + " " + userAddress.City + " " + userAddress.District + " " + userAddress.Detail
 	storeOrder := &models.StoreOrder{
 		Uid:            o.Uid,
@@ -446,6 +448,25 @@ func (o *Order) CreateOrder() (*models.StoreOrder, error) {
 	if err != nil {
 		return nil, errors.New("订单创建失败-00002")
 	}
+	// 写入延迟队列：30 分钟后订单超时自动取消
+	delayQueue := worker.NewDelayQueue()
+	timeoutPayload := worker.OrderEventPayload{
+		OrderId:   storeOrder.OrderId,
+		UserId:    storeOrder.Uid,
+		OrderType: "normal",
+		Action:    "timeout_cancel",
+	}
+	if err = delayQueue.Push(
+		tx,
+		storeOrder.OrderId,            // aggregateId: 订单号
+		"order.timeout",               // eventType: 与 DelayOrderHandler 匹配
+		worker.TopicDelayOrderTimeout, // topic: Redis Stream key
+		30*time.Minute,                // delay: 30 分钟后执行
+		timeoutPayload,
+	); err != nil {
+		return nil, fmt.Errorf("写入延迟队列失败: %w", err)
+	}
+
 	//todo 订单自动取消处理
 	return storeOrder, nil
 }

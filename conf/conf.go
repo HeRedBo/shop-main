@@ -3,16 +3,16 @@ package conf
 import "time"
 
 type Config struct {
-	App      App      `mapstructure:"app" yaml:"app"`
-	Api      Api      `mapstructure:"api" yaml:"api"`
-	Database Database `mapstructure:"database" yaml:"database"`
-	Redis    Redis    `mapstructure:"redis" yaml:"redis"`
-	Kafka    Kafka    `mapstructure:"kafka" yaml:"kafka"`
+	App      App          `mapstructure:"app" yaml:"app"`
+	Api      Api          `mapstructure:"api" yaml:"api"`
+	Database Database     `mapstructure:"database" yaml:"database"`
+	Redis    Redis        `mapstructure:"redis" yaml:"redis"`
+	Kafka    Kafka        `mapstructure:"kafka" yaml:"kafka"`
 	Worker   WorkerConfig `mapstructure:"worker" yaml:"worker"`
-	Server   Server   `mapstructure:"server" yaml:"server"`
-	Zap      Zap      `mapstructure:"zap" yaml:"zap"`
-	Wechat   Wechat   `mapstructure:"wechat" yaml:"wechat"`
-	Express  Express  `mapstructure:"express" yaml:"express"`
+	Server   Server       `mapstructure:"server" yaml:"server"`
+	Zap      Zap          `mapstructure:"zap" yaml:"zap"`
+	Wechat   Wechat       `mapstructure:"wechat" yaml:"wechat"`
+	Express  Express      `mapstructure:"express" yaml:"express"`
 }
 
 type App struct {
@@ -65,16 +65,16 @@ type Server struct {
 }
 
 type Zap struct {
-	LogLevel    string   `mapstructure:"log-level" yaml:"log-level"`           // debug / info / warn / error
-	LogMode     string   `mapstructure:"log-mode" yaml:"log-mode"`             // console / json
-	LogOutput   string   `mapstructure:"log-output" yaml:"log-output"`         // stdout / file / both
-	LogFilepath string   `mapstructure:"log-filepath" yaml:"log-filepath"`     // 日志文件根目录
-	LogFileExt  string   `mapstructure:"log-file-ext" yaml:"log-file-ext"`     // 文件扩展名
-	MaxSize     int      `mapstructure:"max-size" yaml:"max-size"`             // 单文件最大 MB
-	MaxAge      int      `mapstructure:"max-age" yaml:"max-age"`               // 保留天数
-	MaxBackups  int      `mapstructure:"max-backups" yaml:"max-backups"`       // 保留文件数
-	Compress    bool     `mapstructure:"compress" yaml:"compress"`             // 压缩旧文件
-	Modules     []string `mapstructure:"modules" yaml:"modules"`               // 业务模块列表
+	LogLevel    string   `mapstructure:"log-level" yaml:"log-level"`       // debug / info / warn / error
+	LogMode     string   `mapstructure:"log-mode" yaml:"log-mode"`         // console / json
+	LogOutput   string   `mapstructure:"log-output" yaml:"log-output"`     // stdout / file / both
+	LogFilepath string   `mapstructure:"log-filepath" yaml:"log-filepath"` // 日志文件根目录
+	LogFileExt  string   `mapstructure:"log-file-ext" yaml:"log-file-ext"` // 文件扩展名
+	MaxSize     int      `mapstructure:"max-size" yaml:"max-size"`         // 单文件最大 MB
+	MaxAge      int      `mapstructure:"max-age" yaml:"max-age"`           // 保留天数
+	MaxBackups  int      `mapstructure:"max-backups" yaml:"max-backups"`   // 保留文件数
+	Compress    bool     `mapstructure:"compress" yaml:"compress"`         // 压缩旧文件
+	Modules     []string `mapstructure:"modules" yaml:"modules"`           // 业务模块列表
 }
 
 type Kafka struct {
@@ -83,10 +83,10 @@ type Kafka struct {
 
 // HandlerConfig 单个 Handler 的配置
 type HandlerConfig struct {
-	Topic       string `mapstructure:"topic" yaml:"topic"`              // 监听的 Topic
-	Concurrency int    `mapstructure:"concurrency" yaml:"concurrency"`   // 该 Handler 的 Worker Pool 并发数
-	Ordered     bool   `mapstructure:"ordered" yaml:"ordered"`           // 是否有序消费（同 key 同 worker，预留字段）
-	BufferSize  int    `mapstructure:"buffer-size" yaml:"buffer-size"`   // tasks channel 缓冲大小
+	Topic       string `mapstructure:"topic" yaml:"topic"`             // 监听的 Topic
+	Concurrency int    `mapstructure:"concurrency" yaml:"concurrency"` // 该 Handler 的 Worker Pool 并发数
+	Ordered     bool   `mapstructure:"ordered" yaml:"ordered"`         // 是否有序消费（同 key 同 worker，预留字段）
+	BufferSize  int    `mapstructure:"buffer-size" yaml:"buffer-size"` // tasks channel 缓冲大小
 }
 
 type WorkerConfig struct {
@@ -110,6 +110,40 @@ type WorkerConfig struct {
 	// 全局默认值（handlers 中未指定的字段使用此默认值）
 	DefaultConcurrency int `mapstructure:"default-concurrency" yaml:"default-concurrency"`
 	DefaultBufferSize  int `mapstructure:"default-buffer-size" yaml:"default-buffer-size"`
+
+	// Redis Stream 消费者配置
+	RedisStream RedisStreamConfig `mapstructure:"redis-stream" yaml:"redis-stream"`
+
+	// 多队列模式：异构 Process 配置（与 handlers/topics 互斥，启用后忽略旧配置）
+	Processes []ProcessConfig `mapstructure:"processes" yaml:"processes"`
+}
+
+// RedisStreamConfig Redis Stream 消费者配置
+type RedisStreamConfig struct {
+	Enabled       bool                   `mapstructure:"enabled" yaml:"enabled"`             // 是否启用 Redis Stream 消费者
+	Streams       []RedisStreamItemConfig `mapstructure:"streams" yaml:"streams"`             // 消费的 Stream 列表
+	Concurrency   int                    `mapstructure:"concurrency" yaml:"concurrency"`     // 全局默认并发数
+	BufferSize    int                    `mapstructure:"buffer-size" yaml:"buffer-size"`     // 全局默认缓冲大小
+	BlockTimeout  string                 `mapstructure:"block-timeout" yaml:"block-timeout"` // XReadGroup BLOCK 超时
+	HandlerTimeout string               `mapstructure:"handler-timeout" yaml:"handler-timeout"` // 单条消息处理超时
+	MaxRetries    int                    `mapstructure:"max-retries" yaml:"max-retries"`     // Pending 消息最大重试次数
+}
+
+// RedisStreamItemConfig 单个 Redis Stream 的配置
+type RedisStreamItemConfig struct {
+	StreamKey     string `mapstructure:"stream-key" yaml:"stream-key"`           // Redis Stream key
+	ConsumerGroup string `mapstructure:"consumer-group" yaml:"consumer-group"`   // 消费组名称
+	ConsumerName  string `mapstructure:"consumer-name" yaml:"consumer-name"`     // 消费者名称
+	Concurrency   int    `mapstructure:"concurrency" yaml:"concurrency"`         // Worker Pool 并发数（0 使用全局默认）
+	BufferSize    int    `mapstructure:"buffer-size" yaml:"buffer-size"`         // tasks channel 缓冲大小（0 使用全局默认）
+}
+
+// ProcessConfig 单个 Process 的配置（多队列模式）
+type ProcessConfig struct {
+	Name     string                 `mapstructure:"name" yaml:"name"`         // 进程名称
+	Type     string                 `mapstructure:"type" yaml:"type"`         // 队列类型: "kafka" / "redis"
+	Config   map[string]interface{} `mapstructure:"config" yaml:"config"`     // 队列特有配置
+	Handlers []HandlerConfig        `mapstructure:"handlers" yaml:"handlers"` // Handler 配置列表
 }
 
 type Wechat struct {

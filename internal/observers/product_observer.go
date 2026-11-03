@@ -34,7 +34,7 @@ func (o *ProductObserver) AfterCreate(tx *gorm.DB, model interface{}) error {
 	}
 
 	// 写入 Outbox：商品创建事件
-	return worker.WriteOutbox(
+	return worker.WriteKafkaOutbox(
 		tx,
 		fmt.Sprintf("%d", product.Id),
 		"product.created",
@@ -65,7 +65,7 @@ func (o *ProductObserver) AfterUpdate(tx *gorm.DB, model interface{}) error {
 	}
 
 	// 写入 Outbox
-	return worker.WriteOutbox(
+	return worker.WriteKafkaOutbox(
 		tx,
 		fmt.Sprintf("%d", product.Id),
 		eventType,
@@ -125,7 +125,7 @@ func (o *ProductObserver) AfterDelete(tx *gorm.DB, model interface{}) error {
 	}
 
 	// 写入 Outbox：商品删除事件
-	return worker.WriteOutbox(
+	return worker.WriteKafkaOutbox(
 		tx,
 		fmt.Sprintf("%d", product.Id),
 		"product.deleted",
@@ -134,4 +134,3 @@ func (o *ProductObserver) AfterDelete(tx *gorm.DB, model interface{}) error {
 		product,
 	)
 }
-

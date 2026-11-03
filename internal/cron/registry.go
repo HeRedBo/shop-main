@@ -49,11 +49,12 @@ func (r *Registry) Register(name string, spec string, cmd func()) {
 // Start 启动调度器，将所有已注册的任务添加到 cron 调度器并启动
 // 启动失败（如 cron 表达式错误）会打印错误日志但不会 panic
 func (r *Registry) Start() {
+	logger := global.GetLogger("cron")
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.running {
-		global.LOG.Warn("[cron] 调度器已在运行中，跳过重复启动")
+		logger.Warn("[cron] 调度器已在运行中，跳过重复启动")
 		return
 	}
 
@@ -63,20 +64,21 @@ func (r *Registry) Start() {
 	for _, job := range r.jobs {
 		_, err := r.cron.AddFunc(job.Spec, job.Cmd)
 		if err != nil {
-			global.LOG.Errorf("[cron] 注册任务失败: name=%s, spec=%s, error=%v", job.Name, job.Spec, err)
+			logger.Errorf("[cron] 注册任务失败: name=%s, spec=%s, error=%v", job.Name, job.Spec, err)
 			continue
 		}
-		global.LOG.Infof("[cron] 已注册任务: name=%s, spec=%s", job.Name, job.Spec)
+		logger.Infof("[cron] 已注册任务: name=%s, spec=%s", job.Name, job.Spec)
 	}
 
 	r.cron.Start()
 	r.running = true
 
-	global.LOG.Infof("[cron] 调度器已启动，共 %d 个任务", len(r.jobs))
+	logger.Infof("[cron] 调度器已启动，共 %d 个任务", len(r.jobs))
 }
 
 // Stop 停止调度器，等待所有正在执行的任务完成
 func (r *Registry) Stop() {
+	logger := global.GetLogger("cron")
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -88,7 +90,7 @@ func (r *Registry) Stop() {
 	<-ctx.Done()
 	r.running = false
 
-	global.LOG.Info("[cron] 调度器已停止")
+	logger.Info("[cron] 调度器已停止")
 }
 
 // Jobs 返回所有已注册的任务列表（只读副本）

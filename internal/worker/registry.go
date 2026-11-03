@@ -27,7 +27,7 @@ func (r *Registry) Register(topic string, handler Handler) {
 }
 
 // RegisterFunc 以函数形式注册 Handler，方便用闭包快速注册
-func (r *Registry) RegisterFunc(topic string, fn func(ctx context.Context, event *Event) error) {
+func (r *Registry) RegisterFunc(topic string, fn func(ctx context.Context, msg *Message) error) {
 	r.Register(topic, HandlerFunc(fn))
 }
 

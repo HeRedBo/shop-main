@@ -14,7 +14,10 @@ Worker 模块是 Shop-Main 项目中的**常驻进程 Kafka 队列消费服务**
 Worker 模块的核心能力：
 
 - **Transactional Outbox 事件投递**：业务操作与事件记录写入同一事务，保证原子性；写入后通过 Redis PUBLISH 通知 Relay 立即扫描投递，延迟降至毫秒级
+- **多队列支持**：同时支持 Kafka（实时事件流）和 Redis Stream（延迟队列），通过统一消息模型 Message 屏蔽队列差异
 - **Kafka 消费**：双缓冲架构（Poller + Worker Pool 分离），支持有序消费（Key-Based Routing）和消息处理超时控制，慢处理不阻塞拉取，避免 rebalance
+- **Redis Stream 消费**：RedisStreamConsumer 采用与 Kafka Consumer 一致的双缓冲架构，支持消费组、ACK、Pending 列表
+- **延迟调度**：DelayScheduler 基于 Redis Sorted Set 实现毫秒级延迟调度，DB Relay 轮询作为降级兜底
 - **幂等处理**：双层幂等保障（状态机校验 + processed_events 幂等表），实现 at-least-once 语义下的恰好一次效果
 
 ---
@@ -45,25 +48,40 @@ Worker 模块的核心能力：
 ## 三、目录结构说明
 
 ```
-cmd/worker/main.go              — Worker 入口程序（选择性 Bootstrap + Engine 启动）
+cmd/worker/main.go              — Worker 入口程序（选择性 Bootstrap + ProcessManager 统一管理）
 internal/worker/
-  ├── engine.go                 — 引擎（生命周期管理：创建 Consumer/Relay，协调启动和关闭）
+  ├── engine.go                 — 引擎（旧模式兼容路径，内部委托 ProcessManager 管理生命周期）
   ├── consumer.go               — Kafka Consumer（双缓冲架构：Poller + Worker Pool，支持有序消费 + 超时控制）
-  ├── handler.go                — Handler 接口定义 + Event 结构体 + HandlerFunc 适配
+  ├── redis_consumer.go         — Redis Stream Consumer（双缓冲架构，XReadGroup 消费 + ACK）
+  ├── handler.go                — Handler 接口定义 + Message 结构体 + HandlerFunc 适配
+  ├── message.go                — 统一消息模型 Message（Event = Message 类型别名向后兼容）
+  ├── queue_consumer.go         — QueueConsumer 抽象接口（Name/Start/Stop）
+  ├── queue_producer.go         — QueueProducer 抽象接口（Produce/ProduceBatch/Close）
+  ├── process.go                — Process 结构体与状态机（Created→Running→Stopped/Failed）
+  ├── process_manager.go        — ProcessManager 编排层（串行启动/逆序关闭/失败回滚）
+  ├── kafka_process.go          — Kafka Process 工厂（封装 saramaConfig/ConsumerGroup 创建，返回 []*Process）
+  ├── relay_process.go          — Relay Process 工厂（封装 Relay 配置解析与实例化）
+  ├── scheduler_process.go      — DelayScheduler Process 工厂（Redis 不可用时返回 nil 降级）
+  ├── delay_queue.go            — DelayQueue 延迟队列写入接口（Push/PushWithKey）
+  ├── delay_scheduler.go        — DelayScheduler 延迟调度器（Redis Sorted Set 毫秒级调度）
+  ├── payload.go                — OrderEventPayload 统一消息体
   ├── registry.go               — Handler 注册表（按 topic 注册，线程安全）
   ├── middleware.go             — Middleware 链（Recovery/Logging/Timeout 中间件）
-  ├── relay.go                  — Outbox Relay（Redis Pub/Sub 通知 + Ticker 兜底扫描投递 + 租约回收 + 定期清理）
-  └── outbox.go                 — Outbox 写入辅助函数 + Redis 通知 + Topic 常量定义
+  ├── relay.go                  — Outbox Relay（多队列投递: Kafka + Redis，通知驱动 + Ticker 兜底）
+  └── outbox.go                 — Outbox 写入辅助函数 + Redis 通知 + Topic 常量
 internal/workers/
-  ├── register.go               — 统一注册所有 Handler 到 Engine
+  ├── register.go               — 统一注册所有 Handler（RegisterAllToManager(pm) 注册到 ProcessManager）
   ├── demo_handler.go           — Demo Handler（验证 Kafka 消费用）
   ├── product_handler.go        — 商品事件处理器（幂等检查 + 业务逻辑）
-  └── order_handler.go          — 订单事件处理器（幂等检查 + 业务逻辑）
+  ├── order_handler.go          — 订单事件处理器（幂等检查 + 业务逻辑）
+  └── delay_order_handler.go    — 延迟订单处理器（订单超时取消 + 自动确认收货）
 internal/models/
-  ├── event_outbox.go           — Outbox 模型（状态常量：WAIT/SENDING/SENT/DEAD）
-  ├── event_dead_letter.go      — 死信表模型（状态常量：PENDING/RESOLVED）
+  ├── event_outbox.go           — Outbox 模型（状态常量 + queue_type + execute_at）
+  ├── event_dead_letter.go      — 死信表模型（状态常量 + queue_type）
   └── processed_event.go        — 幂等消费记录表模型
+cmd/cli/dlq.go                  — DLQ 运维 CLI 命令（list/retry/discard/clean/stats）
 sql/event_outbox.sql            — 建表 DDL（event_outbox + event_dead_letter + processed_events）
+sql/event_outbox_v2.sql         — V2 迁移脚本（新增 queue_type + execute_at 字段）
 ```
 
 ---
@@ -111,7 +129,7 @@ worker:
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `enabled` | bool | — | 设为 `false` 时 Engine 不启动，进程直接跳过 |
+| `enabled` | bool | — | 设为 `false` 时 ProcessManager 不启动，进程直接跳过 |
 | `group-id` | string | — | Kafka Consumer Group ID，同组消费者共享分区分配 |
 | `handlers` | []HandlerConfig | — | per-Handler 独立配置（推荐方式），每个 topic 对应一个配置项 |
 | `handlers[].topic` | string | — | 监听的 Kafka Topic |
@@ -212,11 +230,11 @@ func (h *PaymentHandler) Handle(ctx context.Context, event *worker.Event) error 
 }
 ```
 
-**第二步**：在 `internal/workers/register.go` 中注册到对应 topic
+**第二步**：在 `internal/workers/register.go` 中通过 `RegisterAllToManager(pm)` 注册到对应 topic
 
 ```go
-func RegisterAll(engine *worker.Engine) {
-    registry := engine.GetRegistry()
+func RegisterAllToManager(pm *worker.ProcessManager) {
+    registry := pm.GetRegistry()
 
     productHandler := NewProductHandler()
     orderHandler := NewOrderHandler()
@@ -329,21 +347,25 @@ Worker 采用**双层幂等**机制：
 
 ### 3. 优雅关闭流程
 
-Worker 收到 SIGINT/SIGTERM 信号后按以下顺序有序关闭：
+Worker 收到 SIGINT/SIGTERM 信号后，由 ProcessManager 统一管理逆序关闭：
 
 ```
-1. 停止 Relay（停止扫描新 Outbox 记录）
-2. 停止 Consumer：
-   a. cancel context → 停止拉取新消息
-   b. 等待 consumeLoop 退出 → 确保无新消息写入 tasks channel
-   c. close(tasks) → 通知 Worker 处理完剩余消息
-   d. 等待所有 Worker goroutine 完成
-3. 取消 Engine context
-4. 关闭 ConsumerGroup 底层连接
-5. Bootstrap.Shutdown() 清理基础资源（DB/Redis/Kafka）
+ProcessManager.Stop()（逆序关闭所有 Process）
+  1. 关闭 DelayScheduler Process（停止延迟调度）
+  2. 关闭 Relay Process（停止扫描新 Outbox 记录）
+  3. 关闭 Kafka Consumer Process（每个 Consumer 内部）：
+     a. cancel context → 停止拉取新消息
+     b. 等待 consumeLoop 退出 → 确保无新消息写入 tasks channel
+     c. close(tasks) → 通知 Worker 处理完剩余消息
+     d. 等待所有 Worker goroutine 完成
+     e. 关闭 ConsumerGroup 底层连接
+  4. 取消 ProcessManager context
+4. Bootstrap.Shutdown() 清理基础资源（DB/Redis/Kafka）
 ```
 
 整个过程保证不丢失消息、不重复处理。
+
+> **旧模式（兼容路径）**：使用 Engine 时，关闭顺序为 Relay → DelayScheduler → ProcessManager → Cancel Context → Runners，由 `engine.Stop()` 统一调度。
 
 ### 4. CPU 空转防范
 
@@ -391,3 +413,276 @@ Relay 采用 Redis Pub/Sub 通知 + Ticker 兜底的双触发机制：
 - **兑底机制**：Ticker 每 10 秒触发一次扫描，保证即使 Redis 通知失败也能最终投递
 - **Redis 不可用影响**：Redis 客户端未初始化或 PUBLISH 失败时，仅记录 warn 日志，不影响主流程；Relay 退化为纯 Ticker 兜底模式（10s 间隔）
 - **多实例安全**：多个 Relay 实例同时收到通知，通过数据库行锁（`UPDATE ... WHERE status='WAIT'`）保证只有一条记录被一个实例投递
+
+---
+
+## 十、Redis 延迟队列使用指南
+
+### 10.1 概述
+
+Worker 模块支持基于 Redis Stream 的延迟队列，用于处理订单超时取消、自动确认收货等需要延迟执行的业务场景。
+
+**核心组件**：
+
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| `DelayQueue` | `delay_queue.go` | 延迟队列写入接口（业务层调用） |
+| `DelayScheduler` | `delay_scheduler.go` | Redis Sorted Set 毫秒级延迟调度（主路径） |
+| `RedisStreamConsumer` | `redis_consumer.go` | Redis Stream 消费端（双缓冲架构） |
+| `Relay` | `relay.go` | DB 轮询兜底投递（10s 精度） |
+
+### 10.2 延迟队列写入
+
+业务层通过 `DelayQueue` 接口写入延迟消息：
+
+```go
+import "shop/internal/worker"
+
+dq := worker.NewDelayQueue()
+
+// 在业务事务中调用
+err := global.Db.Transaction(func(tx *gorm.DB) error {
+    // 1. 业务操作（如创建订单）
+    if err := tx.Create(&order).Error; err != nil {
+        return err
+    }
+
+    // 2. 写入延迟消息（30 分钟后超时取消）
+    payload := worker.OrderEventPayload{
+        OrderId:   order.OrderId,
+        UserId:    order.UserId,
+        OrderType: order.OrderType,
+        Action:    "timeout_cancel",
+    }
+    return dq.Push(tx, order.OrderId, "order.timeout",
+        worker.TopicDelayOrderTimeout, 30*time.Minute, payload)
+})
+```
+
+**底层写入流程**：
+
+1. `DelayQueue.Push()` → 调用 `WriteDelayOutbox()`
+2. `WriteDelayOutbox()` → INSERT `event_outbox`（`queue_type=redis`, `execute_at=NOW()+delay`）
+3. 异步 `ScheduleDelay()` → ZADD `delay:schedule`（score=executeAt_ms）
+4. `DelayScheduler` 每秒扫描 Sorted Set，到期消息 XADD 到 Redis Stream
+
+### 10.3 订单超时取消集成示例
+
+**完整集成流程**：
+
+```go
+// internal/service/order_service/order.go
+
+func (o *Order) Create() {
+    // ... 业务逻辑 ...
+
+    err := global.Db.Transaction(func(tx *gorm.DB) error {
+        // 1. 创建订单
+        if err := tx.Create(&order).Error; err != nil {
+            return err
+        }
+
+        // 2. 写入延迟消息（30 分钟超时取消）
+        dq := worker.NewDelayQueue()
+        payload := worker.OrderEventPayload{
+            OrderId:   order.OrderId,
+            UserId:    order.UserId,
+            OrderType: order.OrderType,
+            Action:    "timeout_cancel",
+        }
+        if err := dq.Push(tx, order.OrderId, "order.timeout",
+            worker.TopicDelayOrderTimeout, 30*time.Minute, payload); err != nil {
+            return err
+        }
+
+        return nil
+    })
+}
+```
+
+**DelayOrderHandler 处理逻辑**：
+
+```
+收到延迟消息 (topic=delay-order-timeout)
+  ├── 幂等检查（processed_event 表）
+  ├── 解析 OrderEventPayload
+  └── 根据 eventType 分发：
+       ├── order.timeout
+       │     └── 检查 Paid=0 && Status=0 → 取消订单
+       │         UPDATE status=cancelled WHERE order_id=? AND paid=0 AND status=0
+       │
+       └── order.auto_confirm
+             └── 检查 Paid=1 && Status=1 → 确认收货
+                 UPDATE status=completed WHERE order_id=? AND paid=1 AND status=1
+```
+
+### 10.4 延迟消息调度路径
+
+**主路径（DelayScheduler）**：
+
+```
+WriteDelayOutbox()
+  → ZADD delay:schedule {score=executeAt_ms, member=event_id}
+  → DelayScheduler.scheduleLoop() (Ticker 1s)
+    → ZRANGEBYSCORE delay:schedule -inf {now_ms} LIMIT 0 50
+    → 对每个到期消息:
+        原子抢占 → XADD → UPDATE SENT → ZREM
+```
+
+**兜底路径（Relay DB 轮询）**：
+
+```
+Relay.scanAndDeliverByType("redis", false)
+  → WHERE status=WAIT AND queue_type=redis AND execute_at <= NOW()
+  → deliverOne() → deliverToRedis() → XADD
+```
+
+**降级保障**：Redis 不可用时，`ScheduleDelay()` 返回 nil，完全依赖 DB Relay 兜底（10s 精度）。消息不丢失，所有延迟消息持久化在 `event_outbox` 表中。
+
+---
+
+## 十一、DLQ 运维 CLI
+
+### 11.1 命令总览
+
+基于 Cobra 框架实现，入口文件：`cmd/cli/dlq.go`
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `dlq list` | 查看死信列表 | `./shop-cli dlq list --topic shop-order-events --limit 20` |
+| `dlq retry` | 重试单条死信 | `./shop-cli dlq retry <event_id>` |
+| `dlq retry --all` | 批量重试全部 PENDING 死信 | `./shop-cli dlq retry --all --topic shop-order-events` |
+| `dlq discard` | 丢弃死信消息 | `./shop-cli dlq discard <event_id>` |
+| `dlq clean` | 清理过期已解决记录 | `./shop-cli dlq clean --days 30` |
+| `dlq stats` | 死信队列统计 | `./shop-cli dlq stats` |
+
+### 11.2 使用示例
+
+**查看死信列表**：
+
+```bash
+$ ./shop-cli dlq list --status PENDING --limit 10
+
+EVENT_ID                              TOPIC                 AGGREGATE_ID                    RETRIES   STATUS      CREATED_AT
+──────────────────────────────────    ────────────────────  ──────────────────────────────  ────────  ──────────  ──────────────────
+a1b2c3d4-e5f6-7890-abcd-ef123456    shop-order-events     ORD-2024-001                    5         PENDING     2024-01-15 10:30
+
+共 1 条记录
+```
+
+**重试单条死信**：
+
+```bash
+$ ./shop-cli dlq retry a1b2c3d4-e5f6-7890-abcd-ef123456
+死信已重新投递: event_id=a1b2c3d4-e5f6-7890-abcd-ef123456, topic=shop-order-events
+```
+
+**批量重试全部 PENDING 死信**：
+
+```bash
+$ ./shop-cli dlq retry --all
+批量重试完成: 成功 3/3
+```
+
+**死信统计**：
+
+```bash
+$ ./shop-cli dlq stats
+
+TOPIC                           STATUS        COUNT
+──────────────────────────────  ────────────  ──────
+shop-order-events               PENDING       3
+shop-order-events               RESOLVED      15
+shop-product-events             PENDING       0
+──────────────────────────────  ────────────  ──────
+TOTAL                           PENDING       3
+TOTAL                           RESOLVED      15
+```
+
+### 11.3 重试流程
+
+```
+dlq retry <event_id>
+  ├── 查询 event_dead_letter (status=PENDING)
+  ├── 重新写入 event_outbox (queue_type=kafka, status=WAIT)
+  ├── 更新死信状态 → RESOLVED
+  └── Relay 自动扫描并投递到 Kafka
+```
+
+---
+
+## 十二、多队列模式注意事项
+
+### 12.1 QueueConsumer 接口统一
+
+Kafka Consumer 和 RedisStreamConsumer 均实现 `QueueConsumer` 接口：
+
+```go
+type QueueConsumer interface {
+    Name() string                    // 消费者名称（日志标识）
+    Start(ctx context.Context) error // 启动消费循环
+    Stop() error                     // 优雅关闭
+}
+```
+
+Handler 无需关心消息来源，统一接收 `*worker.Message`：
+
+```go
+type Handler interface {
+    Handle(ctx context.Context, msg *Message) error
+}
+```
+
+### 12.2 消息模型 Message
+
+`Message` 统一了 Kafka 和 Redis 的消息格式：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `Source` | string | 来源标识: "kafka" / "redis" |
+| `Topic` | string | 统一术语 (Kafka topic / Redis stream key) |
+| `Key` | string | 路由键 |
+| `Value` | []byte | 消息体 |
+| `Headers` | map[string]string | 元数据 |
+| `EventType` | string | 事件类型 |
+| `Delay` | time.Duration | 延迟时间（Redis 特有） |
+| `RawOffset` | interface{} | Kafka=int64, Redis=string |
+
+### 12.3 ProcessManager 编排
+
+多队列模式下，ProcessManager 统一管理异构消费者：
+
+- **串行启动**：避免并发创建 ConsumerGroup 的竞争条件
+- **逆序关闭**：后启动的先关闭，保证依赖关系正确释放
+- **失败回滚**：启动某个 Process 失败时，回滚已启动的 Process
+
+### 12.4 声明式编排与工厂函数
+
+ProcessManager 模式下，各 Process 通过工厂函数创建，main.go 只需声明式添加：
+
+```go
+// cmd/worker/main.go 核心流程
+registry := worker.NewRegistry()
+pm := worker.NewProcessManager(registry)
+
+// Handler 注册到 ProcessManager 的 Registry
+workers.RegisterAllToManager(pm)
+
+// 声明式添加 Process（工厂内部封装所有创建细节）
+pm.AddProcesses(worker.NewKafkaProcesses(workerCfg, global.CONFIG.Kafka, registry)...)
+pm.AddProcess(worker.NewRelayProcess(workerCfg))
+pm.AddProcess(worker.NewSchedulerProcess())
+
+// 统一启动
+pm.Start()
+```
+
+工厂函数说明：
+
+| 工厂函数 | 文件 | 返回值 | 说明 |
+|---------|------|--------|------|
+| `NewKafkaProcesses()` | `kafka_process.go` | `[]*Process` | 根据 handlers 配置为每个 topic 创建独立 Consumer Process |
+| `NewRelayProcess()` | `relay_process.go` | `*Process` | 创建 Relay Process，封装配置解析 |
+| `NewSchedulerProcess()` | `scheduler_process.go` | `*Process` | 创建 DelayScheduler Process，Redis 不可用时返回 nil |
+
+> **旧模式（兼容路径）**：通过 `worker.NewEngine(config)` 创建 Engine，由 Engine 内部管理 Consumer/Relay/DelayScheduler 的创建和启动。

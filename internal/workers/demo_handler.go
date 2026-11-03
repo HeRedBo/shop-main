@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"shop/internal/worker"
-	"shop/pkg/global"
 )
 
 // DemoHandler 是一个简单的 Kafka 消费演示处理器
@@ -18,8 +17,8 @@ func NewDemoHandler() *DemoHandler {
 
 // Handle 实现 worker.Handler 接口
 // 收到消息后打印日志，包含 topic、key、消息长度等信息
-func (h *DemoHandler) Handle(ctx context.Context, event *worker.Event) error {
-	value := string(event.Value)
+func (h *DemoHandler) Handle(ctx context.Context, msg *worker.Message) error {
+	value := string(msg.Value)
 
 	// 截取前 200 个字符，避免日志过长
 	preview := value
@@ -27,12 +26,15 @@ func (h *DemoHandler) Handle(ctx context.Context, event *worker.Event) error {
 		preview = preview[:200] + "..."
 	}
 
-	global.LOG.Infof("[DemoHandler] 收到消息 topic=%s key=%s partition=%d offset=%d length=%d value=%s",
-		event.Topic,
-		event.Key,
-		event.Partition,
-		event.Offset,
-		len(event.Value),
+	// 从 RawOffset 中提取 Kafka offset（仅用于日志展示）
+	offset := extractKafkaOffset(msg.RawOffset)
+
+	Logger().Infof("[DemoHandler] 收到消息 source=%s topic=%s key=%s offset=%d length=%d value=%s",
+		msg.Source,
+		msg.Topic,
+		msg.Key,
+		offset,
+		len(msg.Value),
 		preview,
 	)
 
@@ -40,7 +42,7 @@ func (h *DemoHandler) Handle(ctx context.Context, event *worker.Event) error {
 	if len(value) > 0 {
 		firstChar := value[0]
 		if firstChar == '{' || firstChar == '[' {
-			global.LOG.Debugf("[DemoHandler] JSON 消息原文长度: %d", len(value))
+			Logger().Debugf("[DemoHandler] JSON 消息原文长度: %d", len(value))
 		}
 	}
 

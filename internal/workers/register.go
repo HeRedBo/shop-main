@@ -2,7 +2,6 @@ package workers
 
 import (
 	"shop/internal/worker"
-	"shop/pkg/global"
 )
 
 // RegisterAll 注册所有事件处理器
@@ -21,7 +20,23 @@ func RegisterAll(engine *worker.Engine) {
 	// ===== 生产模式：使用真实 Handler（验证完成后启用） =====
 	productHandler := NewProductHandler()
 	orderHandler := NewOrderHandler()
+	delayOrderHandler := NewDelayOrderHandler()
 	registry.Register(worker.TopicProductEvents, productHandler)
 	registry.Register(worker.TopicOrderEvents, orderHandler)
-	global.LOG.Info("[Worker] 事件处理器注册完成")
+	registry.Register(worker.TopicDelayOrderTimeout, delayOrderHandler)
+	Logger().Info("[Worker] 事件处理器注册完成")
+}
+
+// RegisterAllToManager 注册所有事件处理器到 ProcessManager 的 Registry
+// 功能与 RegisterAll 相同，但面向 ProcessManager 模式
+func RegisterAllToManager(pm *worker.ProcessManager) {
+	registry := pm.GetRegistry()
+
+	productHandler := NewProductHandler()
+	orderHandler := NewOrderHandler()
+	delayOrderHandler := NewDelayOrderHandler()
+	registry.Register(worker.TopicProductEvents, productHandler)
+	registry.Register(worker.TopicOrderEvents, orderHandler)
+	registry.Register(worker.TopicDelayOrderTimeout, delayOrderHandler)
+	Logger().Info("[Worker] 事件处理器注册完成（ProcessManager 模式）")
 }

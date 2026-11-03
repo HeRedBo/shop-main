@@ -33,7 +33,7 @@ func (o *OrderObserver) AfterCreate(tx *gorm.DB, model interface{}) error {
 	}
 
 	// 写入 Outbox：订单创建事件
-	return worker.WriteOutbox(
+	return worker.WriteKafkaOutbox(
 		tx,
 		order.OrderId,
 		"order.created",
@@ -57,7 +57,7 @@ func (o *OrderObserver) AfterUpdate(tx *gorm.DB, model interface{}) error {
 	}
 
 	// 写入 Outbox：订单更新事件
-	return worker.WriteOutbox(
+	return worker.WriteKafkaOutbox(
 		tx,
 		order.OrderId,
 		"order.updated",
@@ -80,7 +80,7 @@ func (o *OrderObserver) AfterDelete(tx *gorm.DB, model interface{}) error {
 		log.Printf("[OrderObserver] 订单删除: %s, 用户: %d", order.OrderId, order.Uid)
 	}
 
-	return worker.WriteOutbox(
+	return worker.WriteKafkaOutbox(
 		tx,
 		order.OrderId,
 		"order.deleted",
@@ -89,4 +89,3 @@ func (o *OrderObserver) AfterDelete(tx *gorm.DB, model interface{}) error {
 		order,
 	)
 }
-

@@ -6,58 +6,131 @@
 
 `cmd/worker` 是一个独立的常驻进程入口，负责：
 
-1. **Outbox Relay**：扫描 `event_outbox` 表中 `status=WAIT` 的记录，投递到 Kafka
+1. **Outbox Relay**：扫描 `event_outbox` 表中 `status=WAIT` 的记录，按 `queue_type` 分发投递到 Kafka 或 Redis Stream
 2. **Kafka Consumer**：消费 Kafka Topic 中的事件消息
-3. **Worker Pool**：并发处理事件，路由到对应的 Handler 执行业务逻辑
+3. **Redis Stream Consumer**：消费 Redis Stream 中的延迟队列消息
+4. **DelayScheduler**：基于 Redis Sorted Set 的毫秒级延迟调度器
+5. **Worker Pool**：并发处理事件，路由到对应的 Handler 执行业务逻辑
 
-三者协作形成完整的事件驱动链路：
+多队列架构下的完整事件驱动链路：
 
 ```
-MySQL (event_outbox) → Outbox Relay → Kafka → Consumer → Worker Pool → Handler
+即时消息（Kafka）：
+  MySQL (event_outbox, queue_type=kafka) → Relay → Kafka → KafkaConsumer → Worker Pool → Handler
+
+延迟消息（Redis）：
+  MySQL (event_outbox, queue_type=redis) → Relay/DelayScheduler → Redis Stream → RedisConsumer → Worker Pool → Handler
 ```
 
 ### 1.2 总体架构图
+
+**当前模式（ProcessManager 统一管理模式）**：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                          cmd/worker/main.go                             │
 │                                                                         │
-│  1. bootstrap.BootstrapWith(WithMySQL, WithRedis, WithKafka, ...)      │
-│  2. engine := worker.NewEngine(cfg)                                     │
-│  3. workers.RegisterAll(engine)   // 注册业务 Handler                    │
-│  4. engine.Start()                // 启动 Relay + Consumer + Pool       │
-│  5. <-ctx.Done()                  // 等待 SIGTERM/SIGINT                │
-│  6. engine.Stop()                 // 优雅关闭                            │
-│  7. bootstrap.Shutdown()                                                │
+│  1. bootstrap.BootstrapWith(WithKafka())                               │
+│  2. registry := worker.NewRegistry()                                    │
+│  3. pm := worker.NewProcessManager(registry)                            │
+│  4. workers.RegisterAllToManager(pm)  // 注册业务 Handler               │
+│  5. pm.AddProcesses(                                                    │
+│       worker.NewKafkaProcesses(...)...,  // Kafka Consumer Process      │
+│     )                                                                   │
+│  6. pm.AddProcess(worker.NewRelayProcess(...))  // Relay Process        │
+│  7. pm.AddProcess(worker.NewSchedulerProcess()) // Scheduler Process    │
+│  8. pm.Start()                  // 串行启动所有 Process                 │
+│  9. <-ctx.Done()                // 等待 SIGTERM/SIGINT                 │
+│ 10. pm.Stop()                   // 逆序关闭所有 Process                 │
+│ 11. bootstrap.Shutdown()                                                │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.3 Engine 核心引擎
+> **旧模式（兼容路径）**：`engine := worker.NewEngine(cfg)` → `engine.Start()` → `engine.Stop()`。Engine 内部仍使用 runners[] + consumerGroups[] 管理组件，但当前 `cmd/worker/main.go` 已切换为 ProcessManager 统一管理模式。
 
-Engine 是 Worker 模块的核心，管理所有组件的生命周期：
+### 1.3 ProcessManager 核心编排（当前模式）
+
+ProcessManager 是 Worker 进程的核心编排层，统一管理所有 Process（Kafka Consumer、Relay、DelayScheduler）的生命周期。每个组件通过工厂函数创建并包装为 `Process`，由 ProcessManager 串行启动、逆序关闭：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Worker Engine                                │
+│                     ProcessManager                                   │
+│                  (统一管理所有 Process 生命周期)                       │
 │                                                                     │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌────────────────┐  │
-│  │   Outbox Relay    │  │  Kafka Consumer   │  │  Health Check  │  │
-│  │   (1 goroutine)   │  │  (1 goroutine)    │  │  (1 goroutine) │  │
-│  └────────┬──────────┘  └────────┬──────────┘  └────────────────┘  │
-│           │                      │                                  │
-│           │              ┌───────▼────────┐                         │
-│           │              │  Worker Pool   │                         │
-│           │              │  (N goroutines)│                         │
-│           │              └───────┬────────┘                         │
-│           │                      │                                  │
-│  ┌────────▼──────────────────────▼────────┐                         │
-│  │          Handler Registry              │                         │
-│  │  event_type → Handler 映射             │                         │
-│  └────────────────────────────────────────┘                         │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  processes []*Process                                        │   │
+│  │                                                              │   │
+│  │  ┌──────────────────┐ ┌──────────────────┐ ┌─────────────┐ │   │
+│  │  │ Process: kafka-  │ │ Process: relay   │ │ Process:    │ │   │
+│  │  │ order-events     │ │                  │ │ delay-      │ │   │
+│  │  │ (Consumer)       │ │ (Relay)          │ │ scheduler   │ │   │
+│  │  │ Runner: Consumer │ │ Runner: Relay    │ │ (DelaySched)│ │   │
+│  │  └──────────────────┘ └──────────────────┘ └─────────────┘ │   │
+│  │                                                              │   │
+│  │  ┌──────────────────┐                                        │   │
+│  │  │ Process: kafka-  │  ← 每个 Handler 对应独立 Process       │   │
+│  │  │ product-events   │                                        │   │
+│  │  │ (Consumer)       │                                        │   │
+│  │  └──────────────────┘                                        │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  Registry (共享)                                             │   │
+│  │  topic → Handler 映射表                                      │   │
+│  │  所有 Kafka Consumer / Redis Consumer 共享同一 Registry      │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  编排策略：                                                         │
+│  • 启动：串行 Start()，避免 ConsumerGroup 并发创建竞争              │
+│  • 关闭：逆序 Stop()，后启动的先关闭                                 │
+│  • 回滚：启动失败时逆序关闭已启动的 Process                          │
 │                                                                     │
 │  共享资源：MySQL DB / Redis / Kafka Producer / Logger / Config      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+> **旧模式（兼容路径）—— Engine 核心引擎**：Engine 曾是 Worker 模块的核心，直接管理 `runners[]`（Kafka Consumer）、`consumerGroups[]`、`relay`、`delayScheduler` 和内部 `processManager`。当前 `cmd/worker/main.go` 已切换为直接使用 ProcessManager 模式，Engine 仍保留在 `internal/worker/engine.go` 中作为兼容路径。
+
+### 1.4 工厂函数（Process 创建）
+
+ProcessManager 模式下，所有组件通过工厂函数创建为 `Process`，封装内部创建细节：
+
+| 工厂函数 | 文件 | 返回 | 说明 |
+|---------|------|------|------|
+| `NewKafkaProcesses()` | `kafka_process.go` | `[]*Process` | 根据 `config.Handlers` 为每个 topic 创建独立 Consumer Process；无 Handler 配置时回退兼容模式 |
+| `NewRelayProcess()` | `relay_process.go` | `*Process` | 创建 Relay Process，封装 `ParseRelayConfig()` + `NewRelay()` |
+| `NewSchedulerProcess()` | `scheduler_process.go` | `*Process` | 创建 DelayScheduler Process，Redis 不可用时返回 nil（降级为 DB Relay 兜底） |
+
+**工厂函数调用链**：
+
+```
+cmd/worker/main.go
+│
+├── registry := worker.NewRegistry()
+├── pm := worker.NewProcessManager(registry)
+│
+├── workers.RegisterAllToManager(pm)          // Handler 注册到 pm.registry
+│
+├── pm.AddProcesses(
+│     worker.NewKafkaProcesses(workerCfg, kafkaCfg, registry)...,
+│   )
+│     └── 每个 Handler → sarama.NewConsumerGroup() → NewConsumerWithConfig()
+│         → NewProcess("kafka-{topic}", "kafka", consumer)
+│
+├── pm.AddProcess(worker.NewRelayProcess(workerCfg))
+│     └── ParseRelayConfig() → NewRelay() → NewProcess("relay", "relay", relay)
+│
+├── pm.AddProcess(worker.NewSchedulerProcess())
+│     └── Redis 可用? → NewDelayScheduler() → NewProcess("delay-scheduler", "scheduler", ds)
+│                      → nil（跳过）
+│
+└── pm.Start()   // 串行启动所有 Process
+```
+
+**设计要点**：
+- 工厂函数内部封装所有配置解析、默认值兜底、资源创建细节，`main.go` 只需声明式调用
+- `AddProcess(nil)` 安全跳过（如 `NewSchedulerProcess` Redis 不可用时返回 nil）
+- `NewKafkaProcesses` 返回切片，支持 per-Handler 创建多个独立 Consumer Process
 
 ---
 
@@ -504,11 +577,20 @@ Handler Registry 实现策略模式，按 `event_type` 路由到对应的 Handle
 │      workers.Register(&OrderCreatedHandler{})                       │
 │  }                                                                  │
 │                                                                     │
-│  方式二：集中注册                                                   │
+│  方式二：集中注册（ProcessManager 模式，当前使用）                    │
+│  func RegisterAllToManager(pm *worker.ProcessManager) {             │
+│      registry := pm.GetRegistry()                                   │
+│      registry.Register("order.created", &OrderCreatedHandler{})     │
+│      registry.Register("order.paid", &OrderPaidHandler{})           │
+│      registry.Register("product.updated", &ProductUpdatedHandler{}) │
+│  }                                                                  │
+│                                                                     │
+│  方式三：集中注册（旧模式，兼容路径）                                 │
 │  func RegisterAll(engine *worker.Engine) {                          │
-│      engine.RegisterHandler(&OrderCreatedHandler{})                 │
-│      engine.RegisterHandler(&OrderPaidHandler{})                    │
-│      engine.RegisterHandler(&ProductUpdatedHandler{})               │
+│      registry := engine.GetRegistry()                               │
+│      registry.Register("order.created", &OrderCreatedHandler{})     │
+│      registry.Register("order.paid", &OrderPaidHandler{})           │
+│      registry.Register("product.updated", &ProductUpdatedHandler{}) │
 │  }                                                                  │
 │                                                                     │
 │  路由逻辑：                                                         │
@@ -885,8 +967,11 @@ worker:
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │  Phase 1: 停止拉取（Stop Pulling）            [立即执行]     │   │
 │  │                                                             │   │
-│  │  - Relay: 停止定时扫描，不再读取新的 WAIT 记录              │   │
-│  │  - Consumer: 调用 consumer.Close()，停止从 Kafka 拉取       │   │
+│  │  pm.Stop() → 逆序关闭所有 Process:                          │   │
+│  │  - DelayScheduler.Stop(): 停止 Redis Sorted Set 调度        │   │
+│  │  - Relay.Stop(): 停止定时扫描，不再读取新的 WAIT 记录       │   │
+│  │  - Consumer.Stop(): 停止从 Kafka 拉取（内部自行关闭         │   │
+│  │    ConsumerGroup 连接）                                     │   │
 │  │  - 效果：不再有新的消息进入 Worker Pool                     │   │
 │  └──────────────────────────┬──────────────────────────────────┘   │
 │                             │                                       │
@@ -1318,21 +1403,26 @@ worker:
 ```
 internal/
 ├── worker/                          # Worker 框架核心代码
-│   ├── engine.go                    # Engine 核心引擎（生命周期管理）
-│   ├── config.go                    # WorkerConfig 配置结构体
-│   ├── event.go                     # Event 结构体定义
-│   ├── handler.go                   # EventHandler 接口 + HandlerFunc 类型
+│   ├── process_manager.go           # ProcessManager 编排层（当前模式核心）
+│   ├── process.go                   # Process 结构体与状态机
+│   ├── runnable.go                  # Runnable 通用任务接口（Start/Stop/Name）
+│   ├── engine.go                    # Engine 核心引擎（旧模式，兼容路径）
+│   ├── kafka_process.go             # Kafka Process 工厂（per-Handler 独立 Consumer）
+│   ├── relay_process.go             # Relay Process 工厂（Outbox 扫描投递）
+│   ├── scheduler_process.go         # DelayScheduler Process 工厂（Redis 延迟调度）
+│   ├── consumer.go                  # Kafka Consumer（双缓冲 + 有序消费 + 超时控制）
+│   ├── redis_consumer.go            # Redis Stream Consumer（双缓冲架构）
+│   ├── handler.go                   # EventHandler 接口 + Event/Message 结构体
 │   ├── registry.go                  # Handler Registry（注册表）
 │   ├── middleware.go                # Middleware 类型定义 + 内置 Middleware
-│   ├── pool.go                      # Worker Pool 实现
-│   ├── relay/                       # Outbox Relay 模块
-│   │   ├── relay.go                 # Relay 主循环
-│   │   ├── scanner.go               # 扫描器（批量扫描 WAIT 记录）
-│   │   ├── producer.go              # Kafka 投递器
-│   │   └── recovery.go              # 回收器（超时 SENDING 回收）
-│   ├── consumer/                    # Kafka Consumer 模块
-│   │   ├── consumer.go              # Consumer 主逻辑（Sarama ConsumerGroup）
-│   │   └── dispatcher.go            # 消息分发器（解码 + 分发到 Pool）
+│   ├── message.go                   # 统一消息模型 Message（Event 类型别名）
+│   ├── payload.go                   # 业务 Payload 结构体（OrderEventPayload 等）
+│   ├── relay.go                     # Relay 主循环（通知驱动 + Ticker 兜底）
+│   ├── outbox.go                    # WriteOutbox 工具函数 + Redis 通知
+│   ├── delay_scheduler.go           # DelayScheduler（Redis Sorted Set 延迟调度）
+│   ├── delay_queue.go               # DelayQueue 延迟队列写入接口
+│   ├── queue_producer.go            # QueueProducer 抽象接口
+│   ├── config.go                    # WorkerConfig 配置结构体
 │   ├── retry/                       # 重试策略
 │   │   ├── strategy.go              # RetryStrategy 接口
 │   │   └── exponential.go           # 指数退避实现
@@ -1341,11 +1431,12 @@ internal/
 │   └── metrics/                     # 监控指标
 │       └── metrics.go               # Prometheus 指标定义 + 注册
 │
-├── workers/                         # 业务 Handler 注册
-│   ├── register.go                  # RegisterAll：集中注册所有 Handler
-│   ├── order_handlers.go            # 订单相关 Handler
-│   ├── product_handlers.go          # 商品相关 Handler
-│   └── user_handlers.go             # 用户相关 Handler
+├── workers/                         # 业务 Handler 实现与注册
+│   ├── register.go                  # RegisterAll + RegisterAllToManager
+│   ├── order_handler.go             # OrderHandler 实现
+│   ├── product_handler.go           # ProductHandler 实现
+│   ├── delay_order_handler.go       # DelayOrderHandler 实现
+│   └── demo_handler.go              # DemoHandler（验证模式）
 │
 ├── models/
 │   ├── event_outbox.go              # event_outbox 表模型
@@ -1354,7 +1445,7 @@ internal/
 │
 cmd/
 └── worker/
-    └── main.go                      # Worker 入口
+    └── main.go                      # Worker 入口（ProcessManager 模式）
 ```
 
 ---
@@ -1373,3 +1464,384 @@ cmd/
 | 优雅关闭 | 四阶段有序关闭 | 强制退出 | 不丢消息，不丢数据 |
 | 日志模块 | 独立 worker 模块 | 复用 app 模块 | 独立文件便于排查，不影响业务日志 |
 | Topic 路由 | event_type 前缀匹配 | 单 Topic | 分 Topic 支持独立扩缩容和监控 |
+
+---
+
+## 十五、多队列架构改造（Phase 1-5）
+
+> 本章节记录 Worker 模块从 Kafka 专用消费引擎向多队列（Kafka + Redis Stream）ProcessManager 架构的演进。
+
+### 15.1 统一消息模型 Message
+
+**文件**：`internal/worker/message.go`
+
+原有的 `Event` 结构体包含 `Offset`/`Partition` 等 Kafka 特有字段，无法适配 Redis Stream。Phase 1 将其重构为 `Message`，屏蔽队列差异：
+
+```go
+type Message struct {
+    // 通用字段
+    Source    string            // 来源标识: "kafka" / "redis"
+    Topic     string            // 统一术语 (Kafka topic / Redis stream key)
+    Key       string            // 路由键
+    Value     []byte            // 消息体
+    Headers   map[string]string // 元数据 (event_id, event_type, aggregate_id 等)
+    EventType string            // 事件类型
+
+    // 队列特有字段（按需使用）
+    Delay     time.Duration     // 延迟时间（Redis 特有，Kafka 为 0）
+    RawOffset interface{}       // Kafka: int64 offset, Redis: Stream ID string
+}
+
+// Event 保留为 Message 的类型别名，向后兼容
+type Event = Message
+```
+
+**设计决策**：选择直接重构 Event → Message（选项 A），而非引入中间层。`type Event = Message` 类型别名保证所有现有 Handler 代码无需修改。
+
+### 15.2 QueueConsumer / QueueProducer 接口
+
+**文件**：`internal/worker/queue_consumer.go`、`internal/worker/queue_producer.go`
+
+为屏蔽不同队列的消费差异，引入抽象接口：
+
+```go
+// QueueConsumer 队列消费者抽象接口
+type QueueConsumer interface {
+    Name() string                    // 消费者名称（日志标识）
+    Start(ctx context.Context) error // 启动消费循环
+    Stop() error                     // 优雅关闭
+}
+
+// QueueProducer 队列生产者抽象接口
+type QueueProducer interface {
+    Produce(ctx context.Context, msg *Message) error
+    ProduceBatch(ctx context.Context, msgs []*Message) error
+    Close() error
+}
+```
+
+**实现类**：
+
+| 实现 | 文件 | 说明 |
+|------|------|------|
+| `Consumer` | `consumer.go` | Kafka ConsumerGroup 消费，实现 QueueConsumer |
+| `RedisStreamConsumer` | `redis_consumer.go` | Redis Stream XReadGroup 消费，实现 QueueConsumer |
+
+编译期接口检查：`var _ QueueConsumer = (*RedisStreamConsumer)(nil)`
+
+> QueueProducer 接口当前已定义但 Relay 仍直接调用 Kafka SyncProducer 和 Redis XADD，后续可通过依赖注入方式接入。
+
+### 15.3 RedisStreamConsumer 双缓冲架构
+
+**文件**：`internal/worker/redis_consumer.go`
+
+RedisStreamConsumer 采用与 Kafka Consumer 一致的 **双缓冲架构**（Poller + Worker Pool），保证慢处理不阻塞拉取：
+
+```
+Redis Stream
+     │
+     ▼
+┌────────────────────────────────┐
+│  redisConsumeLoop (Poller)     │  ← 独立 goroutine
+│  XReadGroup → 构造 Message     │
+│  → tasks <- task               │  ← 发送到有界 channel
+└──────────────┬─────────────────┘
+               │
+    ┌──────────▼──────────┐
+    │   tasks channel     │  ← chan *redisConsumeTask, 缓冲可配置
+    │   (背压机制)         │    满时阻塞 Poller
+    └──────────┬──────────┘
+               │
+    ┌──────────┼──────────┐
+    ▼          ▼          ▼
+ Worker-0   Worker-1   Worker-N   ← Worker Pool
+    │          │          │
+    ▼          ▼          ▼
+ processRedisEvent()              ← 中间件链 + 超时控制
+    │
+    ├── 成功 → XACK (从 Pending 移除)
+    └── 失败 → 不 ACK (保留在 Pending，后续可 XCLAIM 重分配)
+```
+
+**关键配置**（`RedisConsumerConfig`）：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| StreamKey | string | — | Redis Stream key |
+| ConsumerGroup | string | — | 消费组名称 |
+| ConsumerName | string | — | 消费者名称 |
+| Concurrency | int | 1 | Worker Pool 并发数 |
+| BufferSize | int | 1000 | tasks channel 缓冲大小 |
+| BlockTimeout | duration | 5s | XReadGroup BLOCK 超时 |
+| HandlerTimeout | duration | 30s | 单条消息处理超时 |
+| MaxRetries | int | 5 | Pending 消息最大重试次数 |
+
+**XReadGroup 消费组语义**：
+- `>` 表示只读取新消息（未分配给任何消费者）
+- 消费组内多消费者竞争分配，与 Kafka ConsumerGroup 同构
+- XACK 保证 at-least-once 语义，失败消息保留在 Pending 列表
+
+### 15.4 Process 结构体与生命周期
+
+**文件**：`internal/worker/process.go`
+
+每个 Process 封装一个独立的 QueueConsumer 实例，拥有明确的状态机：
+
+```go
+type ProcessStatus int  // Created → Running → Stopped / Failed
+
+type Process struct {
+    Name      string        // 进程名称（如 "kafka-order-consumer"）
+    QueueType string        // 队列类型（"kafka" / "redis"）
+    Consumer  QueueConsumer // 消费者实例
+    Status    ProcessStatus // 运行状态
+    Err       error         // 最后一次错误
+}
+```
+
+**状态机**：
+
+```
+Created ──Start()──▶ Running ──Stop()──▶ Stopped
+                       │
+                       └──异常──▶ Failed
+```
+
+### 15.5 ProcessManager 编排层
+
+**文件**：`internal/worker/process_manager.go`
+
+ProcessManager 管理多个异构 Process（Kafka/Redis 等）的生命周期，类似 Hyperf 的 ProcessManager，但使用 goroutine 而非 fork 进程：
+
+```go
+type ProcessManager struct {
+    processes []*Process
+    registry  *Registry
+    ctx       context.Context
+    cancel    context.CancelFunc
+    mu        sync.Mutex
+    started   bool
+}
+```
+
+**编排策略**：
+
+| 操作 | 策略 | 说明 |
+|------|------|------|
+| **启动** | 串行启动 | 避免并发创建 ConsumerGroup 的竞争条件（Kafka sarama 限制） |
+| **关闭** | 逆序关闭 | 后启动的先关闭，保证依赖关系正确释放 |
+| **失败回滚** | 回滚已启动 | 启动某个 Process 失败时，逆序关闭已启动的 Process |
+| **线程安全** | sync.Mutex | 所有操作加锁，防止并发修改 processes 列表 |
+
+**启动流程**：
+
+```
+ProcessManager.Start()
+  ├── for each Process (串行):
+  │     ├── Consumer.Start(ctx)
+  │     │    ├── 成功 → Status = Running
+  │     │    └── 失败 → stopStartedProcesses() → return error
+  │     └── 下一个
+  └── started = true
+```
+
+**关闭流程**：
+
+```
+ProcessManager.Stop()
+  ├── for i = len-1 → 0 (逆序):
+  │     ├── Consumer.Stop()
+  │     │    ├── 成功 → Status = Stopped
+  │     │    └── 失败 → Status = Failed, Err = err
+  │     └── 下一个
+  ├── cancel()  // 取消 context
+  └── started = false
+```
+
+**ProcessManager 统一管理模式（当前）**：
+
+```
+cmd/worker/main.go
+ └── ProcessManager
+      ├── processes []*Process
+      │    ├── Process{kafka-order-events, kafka, Consumer}
+      │    ├── Process{kafka-product-events, kafka, Consumer}
+      │    ├── Process{relay, relay, Relay}
+      │    └── Process{delay-scheduler, scheduler, DelayScheduler}
+      └── registry *Registry（共享）
+```
+
+> **旧模式（兼容路径）—— Engine 集成**：
+> ```
+> Engine
+>  ├── consumers []QueueConsumer     ← Kafka Consumer 列表（直接管理）
+>  ├── consumerGroups []sarama.ConsumerGroup  ← Kafka 特有资源
+>  ├── processManager *ProcessManager ← 异构 Process 管理（Redis 等）
+>  │    └── processes []*Process
+>  ├── relay *Relay                   ← 多队列 Outbox 投递器
+>  ├── delayScheduler *DelayScheduler ← Redis Sorted Set 延迟调度器
+>  └── registry *Registry             ← Handler 注册表（共享）
+> ```
+
+### 15.6 DelayScheduler 延迟调度器
+
+**文件**：`internal/worker/delay_scheduler.go`
+
+DelayScheduler 基于 Redis Sorted Set 实现毫秒级延迟调度，是延迟消息的**主调度路径**，DB Relay 轮询作为降级兜底：
+
+**调度流程**：
+
+```
+WriteDelayOutbox() 写入 event_outbox (queue_type=redis, execute_at=未来时间)
+       │
+       ├── go ScheduleDelay() → ZADD delay:schedule {score=executeAt_ms, member=event_id}
+       │
+       ▼
+DelayScheduler.scheduleLoop() (Ticker 1s)
+       │
+       ▼
+ZRANGEBYSCORE delay:schedule -inf {now_ms} LIMIT 0 50
+       │
+       ├── 查询 event_outbox 获取完整消息
+       ├── 原子抢占: UPDATE status=SENDING WHERE id=? AND status=WAIT
+       ├── XADD {topic} → 写入 Redis Stream（立即可消费）
+       ├── UPDATE status=SENT
+       └── ZREM delay:schedule {event_id}
+```
+
+**降级机制**：
+- Redis 不可用时，`ScheduleDelay()` 返回 nil，完全依赖 DB Relay 兜底
+- Relay 的 `scanAndDeliverByType("redis", false)` 每 10s 扫描 `execute_at <= NOW()` 的记录
+- DelayScheduler 与 Relay 通过原子抢占（`UPDATE WHERE status=WAIT`）保证消息不被重复投递
+
+**关键常量**：
+- `delayScheduleKey = "delay:schedule"` — Redis Sorted Set key
+- `pollInterval = 1s` — 轮询间隔
+- `batchSize = 50` — 每次最多调度的消息数
+
+### 15.7 多队列 Outbox 写入
+
+**文件**：`internal/worker/outbox.go`
+
+改造后的 Outbox 写入支持多队列分发：
+
+| 函数 | 用途 | queue_type | execute_at |
+|------|------|-----------|------------|
+| `WriteOutbox(tx, ..., queueType, executeAt)` | 通用写入（支持多队列） | 参数指定 | 参数指定 |
+| `WriteKafkaOutbox(tx, ...)` | Kafka 即时消息（向后兼容） | `kafka` | `NULL` |
+| `WriteDelayOutbox(tx, ..., delay)` | Redis 延迟消息 | `redis` | `NOW()+delay` |
+
+`WriteDelayOutbox` 额外将 `event_id` 注册到 Redis Sorted Set（`ScheduleDelay`），实现毫秒级调度。若 Redis 不可用则完全依赖 DB Relay 兜底。
+
+### 15.8 多队列 Relay 投递
+
+**文件**：`internal/worker/relay.go`
+
+Relay 的 `scanAndDeliver()` 按 `queue_type` 分别扫描：
+
+```
+scanAndDeliver()
+  ├── scanAndDeliverByType("kafka", true)   ← execute_at IS NULL 的即时消息
+  │     └── deliverOne() → deliverToKafka() → Kafka Producer.Send()
+  │
+  └── scanAndDeliverByType("redis", false)  ← execute_at <= NOW() 的延迟消息
+        └── deliverOne() → deliverToRedis() → Redis XADD
+```
+
+投递成功后清理 Sorted Set 中的调度记录（`ZREM delay:schedule {event_id}`），防止 DelayScheduler 与 Relay 重复投递。
+
+### 15.9 延迟队列业务集成
+
+**DelayQueue 接口**（`internal/worker/delay_queue.go`）：
+
+```go
+dq := worker.NewDelayQueue()
+
+// 写入延迟消息（与业务同事务）
+err := dq.Push(tx, aggregateId, eventType, topic, delay, payload)
+
+// 指定路由键（保证同一业务实体消息有序）
+err := dq.PushWithKey(tx, aggregateId, eventType, topic, partitionKey, delay, payload)
+```
+
+**DelayOrderHandler**（`internal/workers/delay_order_handler.go`）：
+
+处理 Redis Stream 中的延迟订单消息：
+
+| eventType | 业务逻辑 | 前置条件 |
+|-----------|---------|----------|
+| `order.timeout` | 超时取消订单 | Paid=0 且 Status=0（未支付未发货） |
+| `order.auto_confirm` | 自动确认收货 | Paid=1 且 Status=1（已支付待收货） |
+
+**OrderEventPayload**（`internal/worker/payload.go`）：
+
+```go
+type OrderEventPayload struct {
+    OrderId   string `json:"order_id"`
+    UserId    int64  `json:"user_id"`
+    OrderType string `json:"order_type"` // "normal" / "seckill" / "bargain" / "combination"
+    Action    string `json:"action"`     // "timeout_cancel" / "auto_confirm" / "created" / "paid"
+}
+```
+
+### 15.10 多队列配置模型
+
+**ProcessConfig**（`conf/conf.go`）：
+
+```go
+type ProcessConfig struct {
+    Name     string                 // 进程名称（如 "redis-delay-consumer"）
+    Type     string                 // 队列类型: "kafka" / "redis"
+    Config   map[string]interface{} // 队列特有配置
+    Handlers []HandlerConfig        // Handler 配置列表
+}
+```
+
+**配置优先级**：`Processes 模式` > `Handlers per-Handler 模式` > `Topics 全局模式`
+
+当 `processes` 配置存在时，`handlers` 和 `topics` 配置被忽略。
+
+### 15.11 DLQ 运维 CLI
+
+**文件**：`cmd/cli/dlq.go`
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `dlq list` | 查看死信列表 | `./shop-cli dlq list --topic shop-order-events --limit 20` |
+| `dlq retry` | 重试单条死信 | `./shop-cli dlq retry <event_id>` |
+| `dlq retry --all` | 批量重试全部 PENDING 死信 | `./shop-cli dlq retry --all --topic shop-order-events` |
+| `dlq discard` | 丢弃死信消息 | `./shop-cli dlq discard <event_id>` |
+| `dlq clean` | 清理过期已解决记录 | `./shop-cli dlq clean --days 30` |
+| `dlq stats` | 死信队列统计 | `./shop-cli dlq stats` |
+
+重试流程：`dlq retry <event_id>` → 查询 `event_dead_letter` → 重新写入 `event_outbox` (queue_type=kafka, status=WAIT) → 更新死信状态为 RESOLVED → Relay 自动扫描并投递。
+
+### 15.12 多队列架构新增文件清单
+
+| 文件路径 | 说明 | Phase |
+|---------|------|-------|
+| `internal/worker/message.go` | 统一消息模型 Message | Phase 1 |
+| `internal/worker/queue_consumer.go` | QueueConsumer 抽象接口 | Phase 2 |
+| `internal/worker/queue_producer.go` | QueueProducer 抽象接口 | Phase 2 |
+| `internal/worker/redis_consumer.go` | Redis Stream 消费者实现 | Phase 2 |
+| `internal/worker/process.go` | Process 结构体与状态机 | Phase 3 |
+| `internal/worker/process_manager.go` | ProcessManager 编排层 | Phase 3 |
+| `internal/worker/kafka_process.go` | Kafka Process 工厂函数 | Phase 6 |
+| `internal/worker/relay_process.go` | Relay Process 工厂函数 | Phase 6 |
+| `internal/worker/scheduler_process.go` | DelayScheduler Process 工厂函数 | Phase 6 |
+| `internal/worker/runnable.go` | Runnable 通用任务接口 | Phase 6 |
+| `internal/worker/delay_queue.go` | DelayQueue 延迟队列写入接口 | Phase 5 |
+| `internal/worker/delay_scheduler.go` | DelayScheduler 延迟调度器 | Phase 5 |
+| `internal/worker/payload.go` | OrderEventPayload 统一消息体 | Phase 5 |
+| `cmd/cli/dlq.go` | DLQ 运维 CLI 命令 | Phase 5 |
+
+### 15.13 多队列关键设计决策
+
+| 决策点 | 选择 | 备选方案 | 选择理由 |
+|--------|------|---------|----------|
+| 消息模型 | 直接重构 Event → Message | 引入中间层 | 类型别名保证向后兼容，零迁移成本 |
+| Redis 消费模式 | 复用双缓冲架构 | 单缓冲直消费 | 与 Kafka Consumer 一致，慢处理不阻塞拉取 |
+| 延迟精度 | DB 轮询 + Sorted Set 调度 | 纯 DB 轮询 | Sorted Set 毫秒级精度，DB 兜底保证可靠性 |
+| ProcessManager 启动 | 串行启动 | 并发启动 | Kafka sarama ConsumerGroup 不支持并发创建 |
+| Relay 多队列 | 按 queue_type 分别扫描 | 统一扫描 | 即时消息和延迟消息的查询条件不同 |
+| QueueProducer | 预留接口，Relay 直接调用 | 立即接入 | 避免过度抽象，后续通过 DI 接入 |

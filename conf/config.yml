@@ -100,7 +100,50 @@ worker:
   retry-base-delay: "1s"
   relay-batch-size: 100
   relay-lease-timeout: "60s"
+  relay-cleanup-days: 30
   handler-timeout: "30s"    # 单条消息处理超时时间
+
+  # ===== Redis Stream 延迟队列消费者 =====
+  redis-stream:
+    enabled: true
+    concurrency: 2              # 全局默认并发数
+    buffer-size: 500            # 全局默认缓冲大小
+    block-timeout: "5s"         # XReadGroup BLOCK 超时
+    handler-timeout: "30s"      # 单条消息处理超时
+    max-retries: 5              # Pending 消息最大重试次数
+    streams:
+      - stream-key: "delay-order-timeout"    # Redis Stream key（与 TopicDelayOrderTimeout 一致）
+        consumer-group: "shop-delay-group"   # 消费组名称
+        consumer-name: "shop-worker-1"       # 消费者名称
+        concurrency: 2                       # Worker Pool 并发数（0 使用全局默认）
+        buffer-size: 500                     # tasks channel 缓冲大小（0 使用全局默认）
+
+  # ===== 多队列模式（与 handlers/topics 互斥，启用后忽略旧配置） =====
+  # processes:
+  #   # Kafka 实时事件流
+  #   - name: kafka-order-consumer
+  #     type: kafka
+  #     config:
+  #       group-id: shop-worker
+  #     handlers:
+  #       - topic: "shop-order-events"
+  #         concurrency: 2
+  #         buffer-size: 2000
+  #       - topic: "shop-product-events"
+  #         concurrency: 2
+  #         buffer-size: 1000
+  #
+  #   # Redis Stream 延迟队列
+  #   - name: redis-delay-consumer
+  #     type: redis
+  #     config:
+  #       stream-key: delay-order-queue
+  #       consumer-group: shop-delay-group
+  #       consumer-name: shop-worker-1
+  #     handlers:
+  #       - topic: "delay-order-timeout"
+  #         concurrency: 2
+  #         buffer-size: 500
 
 wechat:
   app_id:

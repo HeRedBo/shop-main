@@ -16,26 +16,39 @@ import (
 // 负责创建 Consumer、管理注册表、协调启动和关闭
 // 支持多 Consumer 模式：每个 HandlerConfig 对应一个独立的 Consumer 实例
 type Engine struct {
-	consumers      []*Consumer
-	consumerGroups []sarama.ConsumerGroup // 每个 Consumer 独立的 ConsumerGroup 实例
-	registry       *Registry
-	relay          *Relay
-	config         conf.WorkerConfig
-	ctx            context.Context
-	cancel         context.CancelFunc
-	mu             sync.Mutex
-	started        bool
+	// ProcessManager 管理异构 Process（Redis 等多队列）
+	processManager *ProcessManager
+
+	// DelayScheduler 基于 Redis Sorted Set 的延迟调度器（主调度路径）
+	delayScheduler *DelayScheduler
+
+	// 保留原有字段（向后兼容）
+	runners  []Runnable  // Kafka/Redis 等多种任务实例
+	registry *Registry
+	relay    *Relay
+	config   conf.WorkerConfig
+	ctx      context.Context
+	cancel   context.CancelFunc
+	mu       sync.Mutex
+	started  bool
 }
 
 // NewEngine 根据 WorkerConfig 创建 Worker 引擎
 func NewEngine(config conf.WorkerConfig) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
+	registry := NewRegistry()
 	return &Engine{
-		registry: NewRegistry(),
-		config:   config,
-		ctx:      ctx,
-		cancel:   cancel,
+		processManager: NewProcessManager(registry),
+		registry:       registry,
+		config:         config,
+		ctx:            ctx,
+		cancel:         cancel,
 	}
+}
+
+// AddProcess 注册一个 Process 到 Engine（用于多队列模式，如 Redis Stream）
+func (e *Engine) AddProcess(p *Process) {
+	e.processManager.AddProcess(p)
 }
 
 // GetRegistry 返回 Handler 注册表，供外部注册 Handler
@@ -56,7 +69,7 @@ func (e *Engine) Start() error {
 	}
 
 	if !e.config.Enabled {
-		global.LOG.Info("[worker] Worker 未启用，跳过启动")
+		Logger().Info("[worker] Worker 未启用，跳过启动")
 		return nil
 	}
 
@@ -72,12 +85,10 @@ func (e *Engine) Start() error {
 	saramaConfig.Consumer.Offsets.AutoCommit.Enable = false // 手动提交 offset
 
 	// 解析全局 handler-timeout 配置
-	handlerTimeout := parseHandlerTimeout(e.config.HandlerTimeout)
+	handlerTimeout := ParseHandlerTimeout(e.config.HandlerTimeout)
 
 	if len(e.config.Handlers) > 0 {
 		// 新模式：per-Handler 独立 Consumer
-		// 每个 Consumer 创建独立的 ConsumerGroup 实例（共享 group-id），
-		// 因为 sarama.ConsumerGroup 同一时间只能有一个活跃的 Consume() 调用
 		for _, h := range e.config.Handlers {
 			config := ConsumerConfig{
 				Topic:          h.Topic,
@@ -107,18 +118,13 @@ func (e *Engine) Start() error {
 			// 为每个 Consumer 创建独立的 ConsumerGroup
 			consumerGroup, err := sarama.NewConsumerGroup(global.CONFIG.Kafka.Hosts, e.config.GroupId, saramaConfig)
 			if err != nil {
-				// 关闭已创建的 ConsumerGroup
-				for _, cg := range e.consumerGroups {
-					cg.Close()
-				}
 				return fmt.Errorf("创建 ConsumerGroup 失败 (topic=%s): %w", h.Topic, err)
 			}
-			e.consumerGroups = append(e.consumerGroups, consumerGroup)
 
 			consumer := NewConsumerWithConfig(consumerGroup, config, e.registry)
-			e.consumers = append(e.consumers, consumer)
+			e.runners = append(e.runners, consumer)
 
-			global.LOG.Infof("[worker] 创建 Consumer: topic=%s, concurrency=%d, buffer-size=%d",
+			Logger().Infof("[worker] 创建 Consumer: topic=%s, concurrency=%d, buffer-size=%d",
 				h.Topic, config.Concurrency, config.BufferSize)
 		}
 	} else {
@@ -130,46 +136,66 @@ func (e *Engine) Start() error {
 		concurrency := e.config.Concurrency
 		if concurrency <= 0 {
 			concurrency = defaultConcurrency
-			global.LOG.Warn("[worker] concurrency 未配置或为 0，使用默认值 1")
+			Logger().Warn("[worker] concurrency 未配置或为 0，使用默认值 1")
 		}
 
 		group, err := sarama.NewConsumerGroup(global.CONFIG.Kafka.Hosts, e.config.GroupId, saramaConfig)
 		if err != nil {
 			return fmt.Errorf("创建 ConsumerGroup 失败: %w", err)
 		}
-		e.consumerGroups = append(e.consumerGroups, group)
 
 		consumer := NewConsumerWithConfig(group, ConsumerConfig{
 			Topics:         e.config.Topics,
 			Concurrency:    concurrency,
 			HandlerTimeout: handlerTimeout,
 		}, e.registry)
-		e.consumers = append(e.consumers, consumer)
+		e.runners = append(e.runners, consumer)
 
-		global.LOG.Infof("[worker] 创建 Consumer（兼容模式）: topics=%v, concurrency=%d",
+		Logger().Infof("[worker] 创建 Consumer（兼容模式）: topics=%v, concurrency=%d",
 			e.config.Topics, concurrency)
 	}
 
-	// 启动所有 Consumer
-	for _, c := range e.consumers {
-		c.Start()
+	// 启动所有 Runner
+	for _, r := range e.runners {
+		if err := r.Start(e.ctx); err != nil {
+			return fmt.Errorf("启动 Runner[%s] 失败: %w", r.Name(), err)
+		}
 	}
 
 	// 创建并启动 Relay（Outbox 扫描投递）
-	relayConfig := parseRelayConfig(e.config)
+	relayConfig := ParseRelayConfig(e.config)
 	e.relay = NewRelay(relayConfig)
-	e.relay.Start()
+	if err := e.relay.Start(e.ctx); err != nil {
+		return fmt.Errorf("启动 Relay 失败: %w", err)
+	}
+
+	// 创建并启动 DelayScheduler（Redis Sorted Set 延迟调度，主调度路径）
+	// Redis 可用时启用，否则完全依赖 DB Relay 兜底
+	if global.RedisClient != nil {
+		e.delayScheduler = NewDelayScheduler(global.RedisClient)
+		if err := e.delayScheduler.Start(e.ctx); err != nil {
+			return fmt.Errorf("启动 DelayScheduler 失败: %w", err)
+		}
+	}
+
+	// 启动 ProcessManager 中注册的额外 Process（Redis 等异构队列）
+	// 注意：Kafka Consumer 已在上面通过 e.runners 直接启动
+	// ProcessManager 管理的是通过 AddProcess 注册的异构 Process
+	if err := e.processManager.Start(); err != nil {
+		return fmt.Errorf("ProcessManager 启动失败: %w", err)
+	}
 
 	e.started = true
 
-	global.LOG.Infof("[worker] Engine 已启动，group-id=%s, consumers=%d",
-		e.config.GroupId, len(e.consumers))
+	Logger().Infof("[worker] Engine 已启动，group-id=%s, runners=%d",
+		e.config.GroupId, len(e.runners))
 
 	return nil
 }
 
 // Stop 优雅关闭引擎
-// 有序关闭：Relay → Consumers → ConsumerGroup
+// 有序关闭：Relay → DelayScheduler → ProcessManager → Cancel Context → Runners
+// 注意：ConsumerGroup 连接由 Consumer.Stop() 内部自行关闭，无需 Engine 层单独管理
 func (e *Engine) Stop() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -178,44 +204,51 @@ func (e *Engine) Stop() error {
 		return nil
 	}
 
-	global.LOG.Info("[worker] Engine 开始关闭...")
+	Logger().Info("[worker] Engine 开始关闭...")
 
 	// 1. 停止 Relay
 	if e.relay != nil {
-		e.relay.Stop()
-	}
-
-	// 2. 停止所有 Consumer（停拉取 + 等 Worker 处理完）
-	for _, c := range e.consumers {
-		c.Stop()
-	}
-
-	// 3. 取消 Engine context
-	e.cancel()
-
-	// 4. 关闭所有 ConsumerGroup 连接
-	// 每个 Consumer 拥有独立的 ConsumerGroup，需逐个关闭
-	for _, cg := range e.consumerGroups {
-		if err := cg.Close(); err != nil {
-			global.LOG.Errorf("[worker] ConsumerGroup 关闭失败: %v", err)
+		if err := e.relay.Stop(); err != nil {
+			Logger().Errorf("[worker] Relay 关闭失败: %v", err)
 		}
 	}
-	e.consumerGroups = nil
+
+	// 1.5. 停止 DelayScheduler
+	if e.delayScheduler != nil {
+		if err := e.delayScheduler.Stop(); err != nil {
+			Logger().Errorf("[worker] DelayScheduler 关闭失败: %v", err)
+		}
+	}
+
+	// 2. 关闭 ProcessManager 中的 Process（异构队列，如 Redis）
+	if e.processManager != nil {
+		e.processManager.Stop()
+	}
+
+	// 3. 取消 Engine context，通知所有 Consumer 的 consumeLoop 准备退出
+	e.cancel()
+
+	// 4. 停止所有 Runner（Consumer.Stop() 内部会等待 Worker 处理完剩余消息并关闭 ConsumerGroup 连接）
+	for _, r := range e.runners {
+		if err := r.Stop(); err != nil {
+			Logger().Errorf("[worker] Runner[%s] 关闭失败: %v", r.Name(), err)
+		}
+	}
 
 	e.started = false
-	global.LOG.Info("[worker] Engine 已关闭")
+	Logger().Info("[worker] Engine 已关闭")
 
 	return nil
 }
 
-// parseHandlerTimeout 解析 handler-timeout 配置，失败则返回默认值 30s
-func parseHandlerTimeout(timeoutStr string) time.Duration {
+// ParseHandlerTimeout 解析 handler-timeout 配置，失败则返回默认值 30s
+func ParseHandlerTimeout(timeoutStr string) time.Duration {
 	if timeoutStr == "" {
 		return defaultTimeout
 	}
 	d, err := time.ParseDuration(timeoutStr)
 	if err != nil {
-		global.LOG.Warnf("[worker] handler-timeout 解析失败，使用默认值 30s: %v", err)
+		Logger().Warnf("[worker] handler-timeout 解析失败，使用默认值 30s: %v", err)
 		return defaultTimeout
 	}
 	if d <= 0 {
@@ -224,14 +257,14 @@ func parseHandlerTimeout(timeoutStr string) time.Duration {
 	return d
 }
 
-// parseRelayConfig 从 WorkerConfig 解析 Relay 配置
-func parseRelayConfig(cfg conf.WorkerConfig) WorkerRelayConfig {
+// ParseRelayConfig 从 WorkerConfig 解析 Relay 配置（导出供 main.go 等外部包使用）
+func ParseRelayConfig(cfg conf.WorkerConfig) WorkerRelayConfig {
 	pollInterval := 5 * time.Second
 	if cfg.PollInterval != "" {
 		if d, err := time.ParseDuration(cfg.PollInterval); err == nil {
 			pollInterval = d
 		} else {
-			global.LOG.Warnf("[worker] poll-interval 解析失败，使用默认值 5s: %v", err)
+			Logger().Warnf("[worker] poll-interval 解析失败，使用默认值 5s: %v", err)
 		}
 	}
 
@@ -240,7 +273,7 @@ func parseRelayConfig(cfg conf.WorkerConfig) WorkerRelayConfig {
 		if d, err := time.ParseDuration(cfg.RetryBaseDelay); err == nil {
 			retryBaseDelay = d
 		} else {
-			global.LOG.Warnf("[worker] retry-base-delay 解析失败，使用默认值 1s: %v", err)
+			Logger().Warnf("[worker] retry-base-delay 解析失败，使用默认值 1s: %v", err)
 		}
 	}
 
@@ -249,7 +282,7 @@ func parseRelayConfig(cfg conf.WorkerConfig) WorkerRelayConfig {
 		if d, err := time.ParseDuration(cfg.RelayLeaseTimeout); err == nil {
 			leaseTimeout = d
 		} else {
-			global.LOG.Warnf("[worker] relay-lease-timeout 解析失败，使用默认值 60s: %v", err)
+			Logger().Warnf("[worker] relay-lease-timeout 解析失败，使用默认值 60s: %v", err)
 		}
 	}
 
