@@ -2,6 +2,10 @@ package global
 
 import (
 	"fmt"
+	"shop/conf"
+	"shop/pkg/logging"
+
+	"github.com/HeRedBo/pkg/es"
 	"github.com/IBM/sarama"
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-redis/redis/v7"
@@ -9,8 +13,6 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
-	"shop/conf"
-	"shop/pkg/logging"
 )
 
 var (
@@ -19,6 +21,7 @@ var (
 	CONFIG             conf.Config
 	WechatOfficial     *officialaccount.OfficialAccount
 	KafkaConsumerGroup sarama.ConsumerGroup
+	EsClient           *es.Client
 
 	// RedisClient 独立 Redis 客户端（用于 Pub/Sub 等 cache 封装层不支持的功能）
 	RedisClient *redis.Client

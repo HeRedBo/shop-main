@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"shop/internal/observers"
@@ -9,9 +10,11 @@ import (
 	"shop/pkg/jwt"
 	"shop/pkg/logging"
 	"sync"
+	"time"
 
 	"github.com/HeRedBo/pkg/cache"
 	"github.com/HeRedBo/pkg/db"
+	"github.com/HeRedBo/pkg/es"
 	"github.com/HeRedBo/pkg/logx/zapx"
 	"github.com/HeRedBo/pkg/mq"
 	"github.com/IBM/sarama"
@@ -56,6 +59,7 @@ type bootstrapConfig struct {
 	jwt           bool
 	kafka         bool
 	kafkaConsumer bool
+	elasticsearch bool
 }
 
 // componentFlags 记录实际初始化的组件，Shutdown 仅关闭已初始化的资源
@@ -64,6 +68,7 @@ var componentFlags struct {
 	mysql         bool
 	kafka         bool
 	kafkaConsumer bool
+	es            bool
 }
 
 // WithCasbin 启用 Casbin 初始化
@@ -98,6 +103,13 @@ func WithKafka() Option {
 func WithKafkaConsumer() Option {
 	return func(c *bootstrapConfig) {
 		c.kafkaConsumer = true
+	}
+}
+
+// WithElasticsearch 启用 Elasticsearch 初始化
+func WithElasticsearch() Option {
+	return func(c *bootstrapConfig) {
+		c.elasticsearch = true
 	}
 }
 
@@ -166,6 +178,11 @@ func BootstrapWith(configPath string, opts ...Option) {
 	if cfg.kafkaConsumer {
 		initKafkaConsumer()
 	}
+
+	// 10. 初始化 Elasticsearch（可选，必须排在 initMySQL 之后，索引装配依赖 global.Db）
+	if cfg.elasticsearch {
+		initES()
+	}
 }
 
 // shutdownOnce 确保 Shutdown 仅执行一次，防止重复关闭导致 panic
@@ -198,6 +215,14 @@ func doShutdown() {
 			if p := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer); p != nil {
 				return p.Close()
 			}
+			return nil
+		})
+	}
+
+	// 关闭 Elasticsearch（仅当已初始化时，先断 ES 再关 Redis/MySQL）
+	if componentFlags.es {
+		safeClose("elasticsearch", func() error {
+			es.CloseAll()
 			return nil
 		})
 	}
@@ -320,4 +345,40 @@ func initKafkaConsumer() {
 	componentFlags.kafkaConsumer = true
 
 	global.LOG.Info("kafka consumer group initialized", "groupId", groupId, "brokers", brokers)
+}
+
+// initES 初始化 Elasticsearch 客户端（含独立 ES/DSL 日志）
+func initES() {
+	c := global.CONFIG.Elasticsearch
+	if !c.Enabled {
+		global.LOG.Info("[bootstrap] Elasticsearch disabled by config, skip init")
+		return
+	}
+
+	err := es.InitClientWithOptions(es.DefaultClient, c.Hosts, c.Username, c.Password,
+		es.WithLogger(zapx.New(logging.GetZapLogger("es"))),
+		es.WithDSLLogger(zapx.New(logging.GetZapLogger("es_dsl"))),
+		es.WithQueryLogEnable(c.QueryLogEnable),
+		// 必须显式传 WithBulk：DefaultBulk() 的 FlushInterval: 1 单位是纳秒，会触发 1ns ticker 空转打满 CPU
+		es.WithBulk(&es.Bulk{
+			Workers:       c.BulkWorkers,
+			FlushInterval: time.Duration(c.FlushIntervalS) * time.Second,
+			ActionSize:    c.BulkActionSize,
+			RequestSize:   c.BulkRequestSize,
+			Ctx:           context.Background(),
+		}),
+	)
+	if err != nil {
+		global.LOG.Error("InitElasticsearchClient error", err, "client", es.DefaultClient)
+		panic(err)
+	}
+
+	// 二次校验：InitClientWithOptions 在 BulkProcessor 初始化失败时可能仅记日志仍返回 nil error
+	global.EsClient = es.GetClient(es.DefaultClient)
+	if global.EsClient == nil {
+		panic("[bootstrap] Elasticsearch 初始化失败：InitClientWithOptions 返回 nil error 但 client 为 nil")
+	}
+	componentFlags.es = true
+
+	global.LOG.Info("elasticsearch client initialized", "hosts", c.Hosts)
 }

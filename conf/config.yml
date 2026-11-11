@@ -43,6 +43,29 @@ kafka:
   hosts: ["127.0.0.1:9092"]
 #  hosts: ["host.docker.internal:9092"]
 
+elasticsearch:
+  enabled: true                              # 是否启用 ES 客户端
+  hosts: ["http://127.0.0.1:9200"]           # ES 节点地址列表
+  username: 'elastic'                        # Basic 认证用户名，无认证留空
+  password: 'elastic'                        # Basic 认证密码，无认证留空
+  indices-dir: ''                            # 外置索引 mapping 目录，空串表示使用内嵌 go:embed
+  bulk-workers: 10                           # BulkProcessor 并发 worker 数
+  bulk-action-size: 1000                     # 每批提交的文档数
+  bulk-request-size: 5242880                 # 每批提交的字节数阈值（5MB）
+  flush-interval: 0                          # 强制 flush 间隔（秒），代码侧必须乘 time.Second；本期取 0=关闭定时 flush
+  #   ↑ 为何是 0：共享库 github.com/HeRedBo/pkg/es 的合理性校验写成 `FlushInterval >= 60`，把 time.Duration
+  #     当成了「60 纳秒」比较，于是任何秒级值（5s=5e9ns≥60）都会打出
+  #     「Bulk FlushInterval must be smaller than 60s; it will be ignored.」并被钳到 60s。真正的修法
+  #     是把库里的 `>= 60` 改成 `>= 60 * time.Second`（或由 bootstrap 侧不传），均不在本次改动边界内；
+  #     故在唯一可控的传参处取 0：olivere BulkProcessor 对 0 不启动 ticker（既消 WARN 又无 1ns 空转）。
+  #     影响面仅共享库 BulkProcessor（Kafka 消费侧）的定时 flush；worker/action-size/size 阈值触发的提交不受影响，
+  #     且本期 CLI 灌数根本不走它（走 admin.IndexBulk 自己切块），故取 0 安全。
+  query-log-enable: false                    # 是否输出 DSL 查询日志到 es_dsl 模块
+  sync-concurrency: 4                        # 全量同步并发数（保守默认）
+  range-multiplier: 4                        # ID 区间数 = 该值 × sync-concurrency
+  bulk-max-mb: 10                            # 单个 bulk 请求体积上限（MB）
+  default-chunk-size: 1000                   # 分块查询默认批大小
+
 zap:
   log-level: 'info'
   log-mode: 'console'          # 生产环境改为 'json'
@@ -69,6 +92,8 @@ zap:
     - 'product_sync'            # 商品同步
     - 'order_report'            # 订单统计报表
     - 'worker'                   # Worker 消费引擎日志
+    - 'es'                       # Elasticsearch 客户端/同步日志
+    - 'es_dsl'                   # Elasticsearch DSL 查询日志
 
 worker:
   enabled: true

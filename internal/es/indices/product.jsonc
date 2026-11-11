@@ -1,0 +1,292 @@
+{
+  // ==========================================================================
+  // shop-product 索引结构声明 —— 本文件是 products 索引结构的【唯一事实源】
+  // ==========================================================================
+  //
+  // 来源：product-consumer/sql/shop-product.json（线上现行 mapping 原样导出），
+  // settings 与 mappings 的层级、数值、字段顺序一律未改动，本文件只追加注释与 _meta。
+  //
+  // 变更纪律（dynamic: strict，零容错）：
+  //   1. 改字段必须先跑 es:migrate 让索引结构生效，再发布产出该字段的代码；
+  //      反向顺序会让所有写入命中 strict_dynamic_mapping_exception 而整批失败。
+  //   2. ProductIndex struct 在 product-consumer / shop-search-api / shop-main 三处重复定义，
+  //      改字段等于跨仓库协议变更，必须三处同步（本仓库那份在 internal/es/doc.go）。
+  //   3. 本文件随二进制 go:embed 发布；运维可用 --indices-dir 外置覆盖做「不发版改结构」，
+  //      但外置内容最终必须回写本文件，否则指纹对不上会反复触发迁移。
+  //
+  // 依赖 ES 插件：analysis-ik（ik_max_word / ik_smart）+ analysis-pinyin（pinyin）。
+  // ngram / edge_ngram / html_strip / lowercase 是 ES 内置，无需插件。
+  // 缺插件时建索引会在 create_index 阶段整请求 400，es:migrate --dry-run 前应先 _analyze 探测。
+
+  "_meta": {
+    "alias": "shop-product",
+    "schema_version": 1,
+    "status": "active",
+    "next_version_rule": "<alias>_v<N+1>",
+    "copy_to_only_fields": ["desc"],
+    "requires_plugins": ["analysis-ik", "analysis-pinyin"],
+    "notes": "本文件是 products 索引结构的唯一事实源；改字段必须先 es:migrate 再发版（strict 模式零容错）。ProductIndex struct 在 product-consumer / shop-search-api / shop-main 三处重复，改字段必须三处同步。settings 顶层与 settings.index 的混合层级是线上原样，diff 归一化在 Phase 5 统一加 index. 前缀后比较。"
+  },
+
+  "settings": {
+    // refresh_interval：动态项，可原地 PUT _settings。灌数期间会临时置 "-1"，
+    // 灌完必须恢复成这里的 1s —— 不恢复会让下次 migrate 误判为漂移。
+    "refresh_interval": "1s",
+
+    // number_of_shards：【静态，创建后不可改】。15 分片意味着蓝绿重建要新建同等 15 分片，
+    // 磁盘与 IO 接近翻倍，重建前必须先 _cat/shards 估体积并确认集群余量；
+    // 变更它 = 必须走完整蓝绿重建 + 全量灌数，代价在本项目所有 settings 里最高。
+    "number_of_shards": 15,
+
+    // number_of_replicas：动态项，可原地改。灌数期间可临时置 0 省一份副本同步，
+    // 灌完恢复为 1 时 15 分片会触发 shard 复制，需单独统计该阶段耗时。
+    "number_of_replicas": 1,
+
+    "index": {
+      // store.preload：静态倾向项，变更按「必须重建」处理。
+      "store.preload": [
+        "nvd",
+        "dvd"
+      ],
+
+      // sort.field / sort.order：创建后【不可修改】（对已建索引重设 index.sort 会被 ES 拒绝）。
+      // 这是「排序预置字段清单」—— 需要新增排序字段必须在建模阶段一次定完，
+      // 事后追加只能蓝绿重建。当前预置：price asc / sales desc / ficti desc。
+      "sort.field": [
+        "price",
+        "sales",
+        "ficti"
+      ],
+      "sort.order": [
+        "asc",
+        "desc",
+        "desc"
+      ],
+
+      // slowlog 三项都是动态项，可原地调整（阈值调参不影响结构，不触发重建）。
+      "search.slowlog.threshold.query.warn": "500ms",
+      "search.slowlog.threshold.fetch.warn": "1s",
+      "indexing.slowlog.threshold.index.warn": "1s"
+    },
+
+    // analysis 整体属于【任何变更都必须蓝绿重建】的清单：
+    // 已分词的数据不会重刷，改 analyzer 后新旧 token 体系不一致，查询期会静默错召。
+    // 注意本段写在 settings 顶层（不带 index. 前缀），与上面 settings.index 是混合层级；
+    // ES 两种写法都接受，回读时统一返回 index. 前缀形式，故 diff 必须先归一化再比。
+    "analysis": {
+      "analyzer": {
+        // 建索引期中文分词：ik_max_word 最细粒度切词，配合 lowercase。
+        "ik_index_analyzer": {
+          "type": "custom",
+          "tokenizer": "ik_max_word",
+          "filter": [
+            "lowercase"
+          ]
+        },
+        // description 专用：与 ik_index_analyzer 当前配置相同，语义上预留 HTML 清洗口径，
+        // 实际的 html_strip 由查询期 ik_search_analyzer 的 char_filter 承担。
+        "ik_index_html_strip_analyzer": {
+          "type": "custom",
+          "tokenizer": "ik_max_word",
+          "filter": [
+            "lowercase"
+          ]
+        },
+        // 查询期分词：ik_smart 粗粒度 + html_strip char_filter + lowercase。
+        // 索引/查询两套 analyzer 不同是刻意为之（写入细、查询准），不要「优化」成同一个。
+        "ik_search_analyzer": {
+          "type": "custom",
+          "tokenizer": "ik_smart",
+          "char_filter": [
+            "html_strip"
+          ],
+          "filter": [
+            "lowercase"
+          ]
+        },
+        // 拼音搜索（store_name.pinyin / ...）。依赖 analysis-pinyin 插件。
+        "pinyin_analyzer": {
+          "tokenizer": "pinyin_tokenizer"
+        },
+        // 单字 ngram，用于逐字匹配（store_name.single）。
+        "ngram_analyzer": {
+          "tokenizer": "ngram_tokenizer"
+        }
+      },
+      "tokenizer": {
+        // keep_separate_first_letter / keep_full_pinyin / keep_original 三件套 +
+        // limit_first_letter_length=16 + remove_duplicated_term。
+        // 任一项变更都会改变 token 集合 —— 必须重建，不存在原地路径。
+        "pinyin_tokenizer": {
+          "type": "pinyin",
+          "keep_separate_first_letter": true,
+          "keep_full_pinyin": true,
+          "keep_original": true,
+          "limit_first_letter_length": 16,
+          "lowercase": true,
+          "remove_duplicated_term": true
+        },
+        // min_gram = max_gram = 1，即单字符切分。
+        "ngram_tokenizer": {
+          "type": "ngram",
+          "min_gram": 1,
+          "max_gram": 1
+        }
+      }
+    }
+  },
+
+  "mappings": {
+    // dynamic: strict —— 本方案最高优先级硬约束。
+    // 写入任何未在此声明的字段，该条 bulk item 直接被拒（strict_dynamic_mapping_exception）。
+    // 因此文档 struct 的 json tag 集合必须与下面 properties 的 key 集合【严格互等】：
+    //   struct 多出 key = 写入失败；mapping 多出 key = 必须列入 _meta.copy_to_only_fields
+    //   （当前只有 desc），否则视为漏灌数据。internal/es/doc_test.go 会双向断言这一条。
+    "dynamic": "strict",
+
+    "_source": {
+      // 四个大文本不入 _source 省空间。后果【必须知道】：
+      // 无法通过 GET _source 回查 store_name / store_info / description / keyword 的原值，
+      // 排查数据不一致只能回 DB 查；失败样本日志里写的是完整 doc 快照，不依赖 _source。
+      // 不要为了调试方便把 excludes 改掉 —— 那是线上结构变更，要走重建流程。
+      "excludes": [
+        "store_name",
+        "store_info",
+        "description",
+        "keyword"
+      ]
+    },
+
+    // 共 18 个 key = ProductIndex 的 17 个 json tag + 虚拟字段 desc。
+    // desc 与 struct 的反向差集恰好是 {desc}，已由 doc_test.go 断言。
+    "properties": {
+      // 文档 _id 同值，无需排序/聚合，故 doc_values:false。
+      "id": {
+        "type": "keyword",
+        "doc_values": false
+      },
+
+      // 商品主标题：ik 索引 / ik_smart 查询；index_options:positions 是高亮与短语匹配的前提。
+      // 子字段 .pinyin（拼音搜索）、.single（单字 ngram），查询侧必须显式写 store_name.pinyin。
+      "store_name": {
+        "type": "text",
+        "index_options": "positions",
+        "analyzer": "ik_index_analyzer",
+        "search_analyzer": "ik_search_analyzer",
+        "fields": {
+          "pinyin": {
+            "type": "text",
+            "store": false,
+            "analyzer": "pinyin_analyzer",
+            "search_analyzer": "pinyin_analyzer"
+          },
+          "single": {
+            "type": "text",
+            "store": false,
+            "index_options": "positions",
+            "analyzer": "ngram_analyzer",
+            "search_analyzer": "ngram_analyzer"
+          }
+        }
+      },
+
+      // 【虚拟汇聚字段】store_info / description / keyword 三处 copy_to 的目标。
+      // 只由 ES 在写入时自动填充，装配函数（internal/es/doc_assemble.go）绝不产出 desc key：
+      // 手动写它不会报错（strict 里它是已声明字段），但会污染三路汇聚的倒排、导致错召。
+      // 已登记在 _meta.copy_to_only_fields 白名单里。
+      "desc": {
+        "type": "text",
+        "index_options": "positions",
+        "analyzer": "ik_index_analyzer",
+        "search_analyzer": "ik_search_analyzer"
+      },
+
+      // 商品简介，copy_to desc。
+      "store_info": {
+        "type": "text",
+        "index_options": "positions",
+        "copy_to": "desc",
+        "analyzer": "ik_index_analyzer",
+        "search_analyzer": "ik_search_analyzer"
+      },
+
+      // 富文本详情。索引用 ik_index_html_strip_analyzer，查询期 char_filter 做 html_strip；
+      // Go 侧仍会先去标签 + 按 rune 截断 2000，避免超长原文进倒排。
+      "description": {
+        "type": "text",
+        "index_options": "positions",
+        "copy_to": "desc",
+        "analyzer": "ik_index_html_strip_analyzer",
+        "search_analyzer": "ik_search_analyzer"
+      },
+
+      // 关键字（逗号分隔的业务词），copy_to desc。
+      "keyword": {
+        "type": "text",
+        "copy_to": "desc",
+        "index_options": "positions",
+        "analyzer": "ik_index_analyzer",
+        "search_analyzer": "ik_search_analyzer"
+      },
+
+      // 分类 id：keyword 且与 routing 同值（strconv.Itoa 形式）。
+      // 因为它是 keyword，按分类过滤必须用 term 而不是数值查询；
+      // routing 值与这里不同形会让同一商品在全量灌入与增量写入时落到不同 shard，_id 幂等失效。
+      "cate_id": {
+        "type": "keyword",
+        "doc_values": false
+      },
+
+      // price 是 double（不是 scaled_float），参与 index.sort asc，零值必须写入。
+      "price": {
+        "type": "double"
+      },
+
+      // sales / ficti 是 long，共同参与 index.sort desc。
+      // 【不得加 omitempty】：排序预置字段缺值会影响排序段与 index sorting 的效果。
+      "sales": {
+        "type": "long"
+      },
+      "ficti": {
+        "type": "long"
+      },
+
+      // 以下六个 is_* 全部是 【keyword】，不是 boolean、不是 integer：
+      //   Go 侧 ProductIndex 用 int8 写入，ES 对 keyword 字段把数字强转成字符串 "0" / "1"。
+      // 因此查询侧必须用 term: {"is_hot": "1"}（term 而非数值范围 / match）。
+      // 【不得改成 boolean】：改成 bool 后写入变成 "true"/"false"，
+      // 所有存量 term "1" 查询静默不命中，属于线上事故级变更，必须走重建 + 全量重灌。
+      // 同样【不得加 omitempty】：0 值必须显式写入，否则该商品在 term "0" 查询里消失。
+      "is_hot": {
+        "type": "keyword"
+      },
+      "is_benefit": {
+        "type": "keyword"
+      },
+      "is_best": {
+        "type": "keyword"
+      },
+      "is_new": {
+        "type": "keyword"
+      },
+      "is_postage": {
+        "type": "keyword"
+      },
+      "is_good": {
+        "type": "keyword"
+      },
+
+      // 两个 date 【没有显式 format】 => 走 ES 默认 strict_date_optional_time||epoch_millis。
+      // 结论（Phase 0 已核对全仓无 MarshalJSON/Format 调用）：
+      //   Go 侧必须用 time.Time 的 stdlib 默认序列化，即 RFC3339Nano。
+      //   禁止 Format("2006-01-02 15:04:05") —— 该空格分隔形态不符合默认 format，
+      //   会被拒为 date_parse_exception（orders 索引恰好相反，它显式声明了该 format，
+      //   两个索引的时间序列化不能共用一个函数）。
+      "create_time":{
+        "type": "date"
+      }, "update_time":{
+        "type": "date"
+      }
+    }
+  }
+}

@@ -3,16 +3,17 @@ package conf
 import "time"
 
 type Config struct {
-	App      App          `mapstructure:"app" yaml:"app"`
-	Api      Api          `mapstructure:"api" yaml:"api"`
-	Database Database     `mapstructure:"database" yaml:"database"`
-	Redis    Redis        `mapstructure:"redis" yaml:"redis"`
-	Kafka    Kafka        `mapstructure:"kafka" yaml:"kafka"`
-	Worker   WorkerConfig `mapstructure:"worker" yaml:"worker"`
-	Server   Server       `mapstructure:"server" yaml:"server"`
-	Zap      Zap          `mapstructure:"zap" yaml:"zap"`
-	Wechat   Wechat       `mapstructure:"wechat" yaml:"wechat"`
-	Express  Express      `mapstructure:"express" yaml:"express"`
+	App           App           `mapstructure:"app" yaml:"app"`
+	Api           Api           `mapstructure:"api" yaml:"api"`
+	Database      Database      `mapstructure:"database" yaml:"database"`
+	Redis         Redis         `mapstructure:"redis" yaml:"redis"`
+	Kafka         Kafka         `mapstructure:"kafka" yaml:"kafka"`
+	Elasticsearch Elasticsearch `mapstructure:"elasticsearch" yaml:"elasticsearch"`
+	Worker        WorkerConfig  `mapstructure:"worker" yaml:"worker"`
+	Server        Server        `mapstructure:"server" yaml:"server"`
+	Zap           Zap           `mapstructure:"zap" yaml:"zap"`
+	Wechat        Wechat        `mapstructure:"wechat" yaml:"wechat"`
+	Express       Express       `mapstructure:"express" yaml:"express"`
 }
 
 type App struct {
@@ -79,6 +80,24 @@ type Zap struct {
 
 type Kafka struct {
 	Hosts []string `mapstructure:"hosts" yaml:"hosts"`
+}
+
+// Elasticsearch ES 客户端与同步任务配置
+type Elasticsearch struct {
+	Enabled         bool     `mapstructure:"enabled" yaml:"enabled"`                       // 是否启用 ES
+	Hosts           []string `mapstructure:"hosts" yaml:"hosts"`                           // ES 节点地址列表
+	Username        string   `mapstructure:"username" yaml:"username"`                     // Basic 认证用户名
+	Password        string   `mapstructure:"password" yaml:"password"`                     // Basic 认证密码
+	IndicesDir      string   `mapstructure:"indices-dir" yaml:"indices-dir"`               // 外置索引目录，空串表示使用内嵌 go:embed
+	BulkWorkers     int      `mapstructure:"bulk-workers" yaml:"bulk-workers"`             // BulkProcessor 并发 worker 数
+	BulkActionSize  int      `mapstructure:"bulk-action-size" yaml:"bulk-action-size"`     // 每批提交的文档数
+	BulkRequestSize int      `mapstructure:"bulk-request-size" yaml:"bulk-request-size"`   // 每批提交的字节数阈值
+	FlushIntervalS  int      `mapstructure:"flush-interval" yaml:"flush-interval"`         // 强制 flush 间隔（秒），使用前必须乘 time.Second
+	QueryLogEnable  bool     `mapstructure:"query-log-enable" yaml:"query-log-enable"`     // 是否输出 DSL 查询日志
+	SyncConcurrency int      `mapstructure:"sync-concurrency" yaml:"sync-concurrency"`     // 全量同步并发数
+	RangeMultiplier int      `mapstructure:"range-multiplier" yaml:"range-multiplier"`     // 区间数 = 该值 × 并发数
+	BulkMaxMB       int      `mapstructure:"bulk-max-mb" yaml:"bulk-max-mb"`               // 单个 bulk 请求体积上限（MB）
+	DefaultChunk    int      `mapstructure:"default-chunk-size" yaml:"default-chunk-size"` // 分块查询默认批大小
 }
 
 // HandlerConfig 单个 Handler 的配置

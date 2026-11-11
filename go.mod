@@ -5,9 +5,10 @@ go 1.25.0
 require (
 	github.com/HeRedBo/pkg/cache v0.0.0-20250421154535-ac0072629fbe
 	github.com/HeRedBo/pkg/db v0.0.0-20260831073628-15f355b79368
+	github.com/HeRedBo/pkg/es v0.0.0-20261109154218-7e9534a78e17
 	github.com/HeRedBo/pkg/file v1.0.0
 	github.com/HeRedBo/pkg/httpclient v0.0.0-20250518092132-658893059cf6
-	github.com/HeRedBo/pkg/logx v0.0.0-20260830141419-92011b3cc7d8
+	github.com/HeRedBo/pkg/logx v0.0.0-20260831081433-225bdd1ff04b
 	github.com/HeRedBo/pkg/mq v0.0.0-20260907103230-646afca3dfa7
 	github.com/HeRedBo/pkg/shutdown v0.0.0-20250421154535-ac0072629fbe
 	github.com/HeRedBo/pkg/sign v0.0.0-20250521224933-16789602bd01
@@ -26,6 +27,7 @@ require (
 	github.com/gookit/goutil v0.6.18
 	github.com/jinzhu/copier v0.4.0
 	github.com/mojocn/base64Captcha v1.3.8
+	github.com/olivere/elastic/v7 v7.0.32
 	github.com/pterm/pterm v0.12.83
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/schollz/progressbar/v3 v3.19.1
@@ -37,6 +39,7 @@ require (
 	github.com/unknwon/com v1.0.1
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.46.0
+	golang.org/x/sync v0.19.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/datatypes v1.2.5
 	gorm.io/gorm v1.31.1
@@ -100,11 +103,13 @@ require (
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
+	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mattn/go-runewidth v0.0.20 // indirect
 	github.com/microsoft/go-mssqldb v1.9.5 // indirect
@@ -138,7 +143,6 @@ require (
 	golang.org/x/exp v0.0.0-20240909161429-701f63a606c0 // indirect
 	golang.org/x/image v0.23.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.34.0 // indirect

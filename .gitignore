@@ -1,6 +1,10 @@
 .idea/
 */.DS_Store
 runtime/logs/
+# es:* 运行期产物：checkpoint / failed_*.jsonl（文件名依赖 target 与时间戳，不入库）
+runtime/es_sync/
+# internal/es/diff_test.go probeRaw 依赖的线上回读样本，属本地实测产物；缺失时用例自动 Skip，不阻塞他人；不入库
+runtime/es_probe/
 lastupdate.tmp
 shop
 *.exe
