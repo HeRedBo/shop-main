@@ -911,6 +911,11 @@ type CutoverOptions struct {
 	DBCount    CountFunc
 	Compensate CompensateFunc // 切换之后收敛窗口增量；nil 时在切换后报错中止
 
+	// IngestCheck 是割接前置预检：在发出【任何】ES 写请求之前确认目标别名的全量灌数编排可用。
+	// 由装配层注入（cmd/cli 接 sync.IngestOrchestrationReady）；nil 时跳过（保持内层单测既有行为）。
+	// 目的：杜绝「先 PUT /<alias>_v1 建出空索引、再在灌数步中止」留下的孤儿索引。
+	IngestCheck func(ctx context.Context, alias string) error
+
 	Tolerance       int64 // 对账容差：|ES - DB| > 该值即在切别名之前中止；负值=永不可达标
 	Force           bool  // 对账不达标仍继续割接（与 es:rebuild --force 同语义，谨慎）
 	DryRun          bool  // 只读预演：任何写调用都会被审计层拒绝
@@ -997,6 +1002,15 @@ func RunCutover(ctx context.Context, opts CutoverOptions) (*CutoverResult, error
 	}
 	if opts.DBCount == nil {
 		opts.DBCount = productCountFunc
+	}
+
+	// ---- 割接前置预检：在任何 ES 读写（连审计层都不建）之前确认全量灌数编排可用 ----
+	// 编排不可用却继续往下跑，第 2 步就会 PUT 出空的 <alias>_v1，第 3 步灌数才失败——留下孤儿索引、
+	// 别名不切。故这里 fail-fast：不可用即拒绝，一条 ES 请求都不发（零写、且零孤儿）。
+	if opts.IngestCheck != nil {
+		if err := opts.IngestCheck(ctx, opts.Alias); err != nil {
+			return nil, fmt.Errorf("es: 割接前置预检未通过 [alias=%s]，已在发出任何 ES 写请求之前拒绝（不建索引、不留孤儿）: %w", opts.Alias, err)
+		}
 	}
 
 	audit := newAuditedCluster(opts.Cluster, opts.DryRun)

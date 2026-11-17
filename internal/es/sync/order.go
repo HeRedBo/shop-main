@@ -13,10 +13,11 @@ package sync
 //   - order_status / pay_type_name 复用 order_service 导出的同一份实现（见 es.BuildOrderDoc），
 //     不抄第二份。
 //
-// 编排边界：本文件只把「数据源 Provider + 差量补偿 + DB 计数口径」三口接线，
-// 不改动 syncIndexTarget 里 product 专属的全量灌数编排（checkpoint/对账/调优仍只认商品形态）。
-// 因此 SyncByAlias("shop-order") 会在编排守卫处如实报「尚未接入全量灌数编排」——这是本期既定
-// 边界（订单全量由 order-consumer 增量写入维护），接线证据落在 NewProvider 命中 + Run 直连灌数。
+// 编排接入（任务 #42 去商品化）：本文件除了「数据源 Provider + 差量补偿 + DB 计数口径」
+// 三口接线外，还实现了 ingestTarget，使订单 provider 完整走通 syncIndexTarget 的全量灌数编排
+// （checkpoint 落盘 / --resume 续传 / setTotal / dry-run 预演 / 灌入调优 / 对账收敛）。
+// 编排机制与商品同源（共用 runDryRun / runReconcile / applyResumeCommon / checkpointSink），
+// 差别只在数据源口径：订单 _id=order_id、资格 is_del=0（无 is_show）、游标下界走 minExclusiveID。
 
 import (
 	"context"
@@ -69,6 +70,12 @@ type orderProvider struct {
 	limit     int64
 	remaining atomic.Int64
 
+	// minExclusiveID：--resume 断点续传的游标下界（id > 该值），0 表示不限制。
+	minExclusiveID int64
+
+	// ck 非空时（编排层挂接）逐区间回写 checkpoint，与商品 provider 同一形态。
+	ck *checkpointSink
+
 	// stats 由 Run 经 StatsCarrier 注入；非空时扫描侧回写进度分子 ScannedDocs。
 	stats *SyncStats
 }
@@ -94,7 +101,7 @@ func (op *orderProvider) AttachStats(stats *SyncStats) { op.stats = stats }
 // Definition 实现 DocProvider。
 func (op *orderProvider) Definition() *es.IndexDefinition { return op.def }
 
-// filter 构造带完整过滤条件的查询（is_del=0 显式 + GORM 软删自动 + ids/since）。
+// filter 构造带完整过滤条件的查询（is_del=0 显式 + GORM 软删自动 + ids/since/resume 下界）。
 // Bounds 与 ScanRange 都基于它，确保区间探测与扫描口径完全一致，并与 OrderDocCount 对齐。
 func (op *orderProvider) filter(ctx context.Context) *gorm.DB {
 	q := op.db.WithContext(ctx).Model(&models.StoreOrder{}).Where("is_del = ?", 0)
@@ -104,11 +111,23 @@ func (op *orderProvider) filter(ctx context.Context) *gorm.DB {
 	if !op.opts.Since.IsZero() {
 		q = q.Where("update_time >= ?", op.opts.Since)
 	}
+	if op.minExclusiveID > 0 {
+		q = q.Where("id > ?", op.minExclusiveID)
+	}
 	return q
 }
 
-// Bounds 用一条聚合查询拿 MIN/MAX/COUNT；空表用 sql.NullInt64 兜住 NULL，避免 GORM 报错。
+// Bounds 用一条聚合查询拿 MIN/MAX/COUNT；委托给可注入的 orderBoundsLookup（与商品 boundsLookup 同构），
+// 便于单测在编排端到端流程中替换边界查询而不依赖真实 MySQL。
 func (op *orderProvider) Bounds(ctx context.Context) (Bounds, error) {
+	return orderBoundsLookup(ctx, op)
+}
+
+// orderBoundsLookup 是订单边界探测的可注入出口（生产 = defaultOrderBoundsLookup）。
+var orderBoundsLookup = defaultOrderBoundsLookup
+
+// defaultOrderBoundsLookup 用一条聚合查询拿 MIN/MAX/COUNT；空表用 sql.NullInt64 兜住 NULL，避免 GORM 报错。
+func defaultOrderBoundsLookup(ctx context.Context, op *orderProvider) (Bounds, error) {
 	var row struct {
 		MinID sql.NullInt64 `gorm:"column:min_id"`
 		MaxID sql.NullInt64 `gorm:"column:max_id"`
@@ -131,7 +150,7 @@ func (op *orderProvider) Bounds(ctx context.Context) (Bounds, error) {
 func (op *orderProvider) ScanRange(ctx context.Context, r IDRange, emit func(ProviderBatch) error) error {
 	db := op.filter(ctx).Select(orderScanColumns).Where("id > ? AND id <= ?", r.Lo, r.Hi)
 
-	return chunk.ChunkById(db, op.chunkSize, func(batch []models.StoreOrder, _ int) error {
+	err := chunk.ChunkById(db, op.chunkSize, func(batch []models.StoreOrder, _ int) error {
 		// chunk 回调首行检查 ctx，取消借道 error 中断游标循环（chunk 无 ctx 参数）。
 		if err := ctx.Err(); err != nil {
 			return err
@@ -144,6 +163,13 @@ func (op *orderProvider) ScanRange(ctx context.Context, r IDRange, emit func(Pro
 		if err != nil {
 			return err
 		}
+
+		// resume 游标必须在 emit 之前记录（与商品 provider 同一口径）：emit 可能因 writer 失败
+		// 而永不返回，但本批已从 DB 读出，不记 checkpoint 会导致 resume 重灌整批。
+		if op.ck != nil {
+			op.ck.observeRange(r, batch[len(batch)-1].Id)
+		}
+
 		if err := emit(orderBatch{Rows: batch, CartInfos: cartByOID}); err != nil {
 			return err
 		}
@@ -158,6 +184,25 @@ func (op *orderProvider) ScanRange(ctx context.Context, r IDRange, emit func(Pro
 		}
 		return nil
 	})
+	op.markRangeDone(r, err)
+	return err
+}
+
+// markRangeDone 只在区间游标正常走到底（err==nil）时登记「该区间完整覆盖」；
+// 取消/超时/反压打断/达到 --limit 时不登记，游标停在最小连续覆盖右边界（宁可重扫不可漏扫）。
+func (op *orderProvider) markRangeDone(r IDRange, err error) {
+	if err != nil || op.ck == nil {
+		return
+	}
+	op.ck.completeRange(r)
+}
+
+// PlanRanges 实现 RangePlanCarrier：把本次运行的区间计划转交 checkpoint sink，
+// sink 据此把并发乱序的区间进度收敛成单调游标。与商品 provider 同一形态。
+func (op *orderProvider) PlanRanges(ranges []IDRange) {
+	if op.ck != nil {
+		op.ck.planRanges(ranges)
+	}
 }
 
 // Assemble 在 writer 侧把原始批次装配成 []admin.Doc：逐行 BuildOrderDoc + _id/routing。
@@ -385,5 +430,45 @@ func CompensateOrder(ctx context.Context, target string, since time.Time, opts C
 	return st, nil
 }
 
-// 编译期自检：orderProvider 确实实现 DocProvider。
-var _ DocProvider = (*orderProvider)(nil)
+// ---------------------------------------------------------------------------
+// ingestTarget 实现（订单侧接入全量灌数编排）
+// ---------------------------------------------------------------------------
+
+// setCheckpoint 挂接编排层统一创建的 checkpoint sink。
+func (op *orderProvider) setCheckpoint(ck *checkpointSink) { op.ck = ck }
+
+// applyResume 把已加载 checkpoint 的游标下界应用到 provider（与商品共用 applyResumeCommon，
+// 输出逐字一致）。
+func (op *orderProvider) applyResume(cp checkpoint, runOpts *Options) {
+	applyResumeCommon(cp, runOpts, func(id int64) { op.minExclusiveID = id })
+}
+
+// primeTotal 在全量首次运行从边界取 Total 写入 sink（与商品 setTotalFromBounds 同一语义）。
+func (op *orderProvider) primeTotal(ctx context.Context) {
+	if op.ck == nil {
+		return
+	}
+	if b, err := op.Bounds(ctx); err == nil {
+		op.ck.setTotal(b.Total)
+	}
+}
+
+// fullReconcile 全量口径对账，走与商品同源的 runReconcile（expected 来自 op.Bounds）。
+func (op *orderProvider) fullReconcile(ctx context.Context, target string, stats *SyncStats, tolerance int64) error {
+	return runReconcile(ctx, op, op.limit, target, stats, tolerance)
+}
+
+// resumeReconcile resume 对账：临时去掉游标下界取全量口径，完成后恢复（与商品 execResumeReconcile 同构）。
+func (op *orderProvider) resumeReconcile(ctx context.Context, target string, stats *SyncStats, tolerance int64) error {
+	saved := op.minExclusiveID
+	op.minExclusiveID = 0
+	err := runReconcile(ctx, op, op.limit, target, stats, tolerance)
+	op.minExclusiveID = saved
+	return err
+}
+
+// 编译期自检：orderProvider 既实现 DocProvider，也实现 ingestTarget（订单已接入全量灌数编排）。
+var (
+	_ DocProvider  = (*orderProvider)(nil)
+	_ ingestTarget = (*orderProvider)(nil)
+)

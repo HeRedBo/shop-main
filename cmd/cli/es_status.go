@@ -389,7 +389,9 @@ func buildAliasStatus(ctx context.Context, cluster es.Cluster, def *es.IndexDefi
 	st.ESCount = esCount
 	diff, ok := es.ReconcileCounts(expected, esCount, spec.Tolerance)
 	st.CountDiff, st.CountOK = diff, ok
-	st.CountScope = fmt.Sprintf("MySQL 口径 is_del=0 AND is_show=1 vs %s/_count", st.WriteIndex)
+	// 口径描述按别名走（与 dbCounters 同源登记），商品仍为 is_del=0 AND is_show=1（逐字不变），
+	// 订单为 is_del=0；绝不再对非商品别名硬编码输出 is_show。
+	st.CountScope = fmt.Sprintf("MySQL 口径 %s vs %s/_count", sync.DBCounterScope(alias), st.WriteIndex)
 	return st
 }
 

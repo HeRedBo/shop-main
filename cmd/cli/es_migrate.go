@@ -184,6 +184,11 @@ func runESMigrate(cmd *cobra.Command) error {
 		DropOld:          spec.DropOld,
 		FinalizeTimeout:  spec.FinalizeTO,
 		Logf:             logf,
+		// 迁移前置预检：首建/蓝绿重建两条会灌数的路径在发出任何 ES 写请求之前确认目标
+		// 别名的全量灌数编排可用；不可用即拒绝，杜绝「先建空 v1 再在灌数步失败」的孤儿索引。
+		IngestCheck: func(ctx context.Context, alias string) error {
+			return sync.IngestOrchestrationReady(alias, sync.Options{IndicesDir: spec.IndicesDir})
+		},
 	})
 
 	if res != nil {

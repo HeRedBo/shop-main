@@ -235,6 +235,35 @@ func productIDs(rows []models.StoreProduct) []int64 {
 }
 
 // ---------------------------------------------------------------------------
+// ingestTarget 实现（去商品化后的商品侧薄包装）
+// ---------------------------------------------------------------------------
+
+// 下列方法把编排层所需能力转调既有的包级 var / 函数（reconcile / execResumeReconcile /
+// setTotalFromBounds / applyResumeState），保留它们作为单测注入点的同时使 syncIndexTarget
+// 只依赖 ingestTarget。转调发生在调用时读取 var，故测试对 var 的替换依旧生效，商品路径逐字不变。
+
+func (pp *productProvider) setCheckpoint(ck *checkpointSink) { pp.ck = ck }
+
+func (pp *productProvider) applyResume(cp checkpoint, runOpts *Options) {
+	applyResumeState(cp, pp, runOpts)
+}
+
+func (pp *productProvider) primeTotal(ctx context.Context) {
+	setTotalFromBounds(ctx, pp)
+}
+
+func (pp *productProvider) fullReconcile(ctx context.Context, target string, stats *SyncStats, tolerance int64) error {
+	return reconcile(ctx, pp, target, stats, tolerance)
+}
+
+func (pp *productProvider) resumeReconcile(ctx context.Context, target string, stats *SyncStats, tolerance int64) error {
+	return execResumeReconcile(ctx, pp, target, stats, tolerance)
+}
+
+// 编译期自检：商品 provider 必须实现编排接口，否则 syncIndexTarget 会退回到未接入护栏。
+var _ ingestTarget = (*productProvider)(nil)
+
+// ---------------------------------------------------------------------------
 // 编程式入口：SyncProducts
 // ---------------------------------------------------------------------------
 
@@ -286,9 +315,9 @@ func syncIndexTarget(ctx context.Context, alias string, opts Options) (*SyncStat
 	if err != nil {
 		return nil, err
 	}
-	pp, ok := p.(*productProvider)
+	pp, ok := p.(ingestTarget)
 	if !ok {
-		return nil, fmt.Errorf("sync: 别名 %s 的数据源 %T 尚未接入全量灌数编排（checkpoint/对账/调优仅支持商品 provider 形态）", def.Alias(), p)
+		return nil, fmt.Errorf("sync: 别名 %s 的数据源 %T 尚未接入全量灌数编排（checkpoint/对账/调优）；请为该 provider 实现 ingestTarget 后再接入灌数", def.Alias(), p)
 	}
 
 	// retry-failed：跳过区间扫描，直接复跑失败明细（runtime 才连 ES）。
@@ -313,20 +342,20 @@ func syncIndexTarget(ctx context.Context, alias string, opts Options) (*SyncStat
 				return nil, fmt.Errorf("sync: 读取 checkpoint 失败 [%s]: %w", cpPath, lerr)
 			}
 			fmt.Printf("[resume] 未找到 checkpoint，将从头全量执行\n")
-			pp.ck = newCheckpointSink(cpPath, target)
+			pp.setCheckpoint(newCheckpointSink(cpPath, target))
 		} else {
 			// resume：保留原始 StartedAt 与 Total，只推进 LastID。
-			pp.ck = restoreCheckpointSink(cpPath, cp)
-			applyResumeState(cp, pp, &runOpts)
+			pp.setCheckpoint(restoreCheckpointSink(cpPath, cp))
+			pp.applyResume(cp, &runOpts)
 		}
 	} else {
-		pp.ck = newCheckpointSink(cpPath, target)
+		pp.setCheckpoint(newCheckpointSink(cpPath, target))
 	}
 	// 生产路径设置 Total：Bounds 取得后写入 checkpoint，使落盘文件 total > 0。
 	// resume 路径不覆盖：restoreCheckpointSink 已保留原始 Total，重复 setTotal 会用
 	// 带游标下界的 Bounds（偏小）覆盖首次全量口径，破坏 resume 的 StartedAt/Total 保留语义。
 	if !opts.Resume {
-		setTotalFromBounds(ctx, pp)
+		pp.primeTotal(ctx)
 	}
 
 	// 灌入调优（方案 7.3）：仅当目标是未持有别名的物理索引时才临时关 refresh/副本。
@@ -394,9 +423,9 @@ func syncIndexTarget(ctx context.Context, alias string, opts Options) (*SyncStat
 	// resume 对账：临时去掉 minExclusiveID 过滤，取全量口径期望值。
 	// execResumeReconcile 封装 save/restore 模式，单测直接保护该调用点。
 	if opts.Resume {
-		err = execResumeReconcile(ctx, pp, target, stats, opts.Tolerance)
+		err = pp.resumeReconcile(ctx, target, stats, opts.Tolerance)
 	} else {
-		err = reconcile(ctx, pp, target, stats, opts.Tolerance)
+		err = pp.fullReconcile(ctx, target, stats, opts.Tolerance)
 	}
 	if err != nil {
 		return stats, err // checkpoint 保留，供 --resume 续传
@@ -457,8 +486,9 @@ func runRetryFailed(ctx context.Context, target string, opts Options) (*SyncStat
 }
 
 // runDryRun 只读预演：探测边界后打印将执行的请求序列，不发起任何写请求。
-func runDryRun(ctx context.Context, pp *productProvider, reg *es.Registry, target string, opts Options) (*SyncStats, error) {
-	bounds, err := pp.Bounds(ctx)
+// 取 DocProvider 而非具体 provider：编排层去商品化后，商品与订单的预演共用同一份打印逻辑。
+func runDryRun(ctx context.Context, p DocProvider, reg *es.Registry, target string, opts Options) (*SyncStats, error) {
+	bounds, err := p.Bounds(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -500,10 +530,16 @@ func runDryRun(ctx context.Context, pp *productProvider, reg *es.Registry, targe
 }
 
 // reconcile 对账：admin.Refresh + admin.Count 与 provider 过滤口径下的期望行数比较。
-// 期望值 = SELECT COUNT(*) WHERE is_del=0 AND is_show=1（provider.filter 口径），
-// 差异 > tolerance 即返回 error（由上层得到非零退出码）。
+// 期望值 = provider Bounds 命中行数（clamp --limit），差异 > tolerance 即返回 error。
 // 转为 var 以便单测在 SyncProducts 端到端流程中替换（避免依赖真实 ES 连接）。
+// 签名仍锁 *productProvider（现有测试以此重赋值）；实际比对逻辑下沉到 runReconcile，与订单共用同一口径。
 var reconcile = func(ctx context.Context, pp *productProvider, target string, stats *SyncStats, tolerance int64) error {
+	return runReconcile(ctx, pp, pp.limit, target, stats, tolerance)
+}
+
+// runReconcile 是两种 provider 形态共用的对账内核：Refresh → Count → provider.Bounds → 按 limit 收敛
+// 期望值 → |ES-DB| > tolerance 即失败。expected 口径完全来自 provider.Bounds（与扫描同源）。
+func runReconcile(ctx context.Context, p DocProvider, limit int64, target string, stats *SyncStats, tolerance int64) error {
 	if err := admin.Refresh(ctx, target); err != nil {
 		return err
 	}
@@ -511,13 +547,13 @@ var reconcile = func(ctx context.Context, pp *productProvider, target string, st
 	if err != nil {
 		return err
 	}
-	bounds, err := pp.Bounds(ctx)
+	bounds, err := p.Bounds(ctx)
 	if err != nil {
 		return err
 	}
 	expected := bounds.Total
-	if pp.limit > 0 && pp.limit < expected {
-		expected = pp.limit
+	if limit > 0 && limit < expected {
+		expected = limit
 	}
 	stats.TotalDocs.Store(expected)
 
@@ -563,9 +599,16 @@ func shouldSkipReconcile(opts Options) bool {
 
 // applyResumeState 把已加载的 checkpoint 应用到 provider 与 runOpts（纯函数，可单测）。
 // LastID>0 时设游标下界并强制 k=1，保证 resume 单区间单游标、id 单调不跳段。
+// 签名仍锁 *productProvider（现有测试直接调用）；共享的打印/k 收敛下沉到 applyResumeCommon。
 func applyResumeState(cp checkpoint, pp *productProvider, runOpts *Options) {
+	applyResumeCommon(cp, runOpts, func(id int64) { pp.minExclusiveID = id })
+}
+
+// applyResumeCommon 是两种 provider 形态共用的 resume 应用逻辑：把游标下界交给 setCursor，
+// 并强制单区间单游标（k=1）+ 打印续传行，保证输出逐字一致。
+func applyResumeCommon(cp checkpoint, runOpts *Options, setCursor func(int64)) {
 	if cp.LastID > 0 {
-		pp.minExclusiveID = cp.LastID
+		setCursor(cp.LastID)
 		runOpts.Concurrency = 1
 		runOpts.RangeMultiplier = 1
 		fmt.Printf("[resume] 从 id=%d 续传（单区间模式）\n", cp.LastID)

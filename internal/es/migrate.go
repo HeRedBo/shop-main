@@ -44,6 +44,10 @@ type MigrateOptions struct {
 	Compensate CompensateFunc
 	DBCount    CountFunc
 
+	// IngestCheck 是割接/迁移前置预检：在首建路径发出【任何】ES 写请求之前确认目标别名的
+	// 全量灌数编排可用。由装配层注入（cmd/cli 接 sync.IngestOrchestrationReady）；nil 时跳过。
+	IngestCheck func(ctx context.Context, alias string) error
+
 	Alias            string // "" 或 "all" → 全部可执行 Definition；否则只跑该别名
 	Tolerance        int64
 	DryRun           bool
@@ -282,6 +286,16 @@ func migrateInplace(ctx context.Context, def *IndexDefinition, cur string, c Reb
 // delegateRebuild 把 ActionRebuild/--force-rebuild 交给第六节蓝绿编排，注入同一批窄接口。
 // rebuild 自带单层审计，其写台账落在返回的 RebuildResult.WriteOps 里。
 func delegateRebuild(ctx context.Context, def *IndexDefinition, cur string, c RebuildTarget, opts MigrateOptions, logf func(string, ...any), rec *DefMigrateResult) *DefMigrateResult {
+	// 蓝绿重建同样先建新索引再灌数，与首建共享「空 v1 孤儿」风险：在 RunRebuild 发出任何
+	// ES 写请求之前确认全量灌数编排可用；不可用即拒绝，不建新索引、不留孤儿。
+	if opts.IngestCheck != nil {
+		if err := opts.IngestCheck(ctx, def.Alias()); err != nil {
+			rec.Verdict = string(VerdictError)
+			rec.Error = fmt.Sprintf("灌数编排不可用，已在发出任何 ES 写请求之前拒绝蓝绿重建 [alias=%s]（不建新索引、不留孤儿）: %v", def.Alias(), err)
+			logf("[migrate] %s: %s", def.Alias(), rec.Error)
+			return rec
+		}
+	}
 	rb, err := RunRebuild(ctx, RebuildOptions{
 		Alias:            def.Alias(),
 		Definition:       def,
@@ -317,6 +331,16 @@ func delegateRebuild(ctx context.Context, def *IndexDefinition, cur string, c Re
 func migrateFirstCreate(ctx context.Context, def *IndexDefinition, c RebuildTarget, opts MigrateOptions, logf func(string, ...any), rec *DefMigrateResult) *DefMigrateResult {
 	alias := def.Alias()
 	next := def.Name()
+	// 前置预检：在发出任何 ES 写请求（含首建 PUT /<next>）之前确认全量灌数编排可用；不可用即拒绝，
+	// 不建索引、不留孤儿。dry-run 也先过这道闸（编排不可用则本就不该承诺“能首建+灌数”）。
+	if opts.IngestCheck != nil {
+		if err := opts.IngestCheck(ctx, alias); err != nil {
+			rec.Verdict = string(VerdictError)
+			rec.Error = fmt.Sprintf("灌数编排不可用，已在发出任何 ES 写请求之前拒绝首建 [alias=%s]（不建索引、不留孤儿）: %v", alias, err)
+			logf("[migrate] %s: %s", alias, rec.Error)
+			return rec
+		}
+	}
 	dbExpected, err := opts.DBCount(ctx, alias)
 	if err != nil {
 		rec.Verdict = string(VerdictError)

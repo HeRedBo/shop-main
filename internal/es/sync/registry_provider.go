@@ -66,6 +66,22 @@ var dbCounters = map[string]DBCounter{
 	OrderAlias:   es.OrderDocCount,
 }
 
+// dbCounterScopes 是「别名 → 期望数口径的人话描述」，与 dbCounters 一一对应、同源登记。
+// es:status / es:cutover 的影响面摘要用它打印「期望数怎么算的」，而不是对任意别名硬编码商品
+// 口径（is_del=0 AND is_show=1）—— 订单没有 is_show 维度，把商品文案套到订单上就是错的。
+var dbCounterScopes = map[string]string{
+	ProductAlias: "is_del=0 AND is_show=1",
+	OrderAlias:   "is_del=0",
+}
+
+// DBCounterScope 返回某别名期望数口径的可读描述；未登记别名返回明确提示，绝不回落商品口径。
+func DBCounterScope(alias string) string {
+	if s, ok := dbCounterScopes[alias]; ok {
+		return s
+	}
+	return "该别名未登记 DB 计数口径"
+}
+
 // ProviderByAlias 查表返回某个别名的数据源构造器。
 // 未登记即 ok=false，由调用方决定是报错还是降级。
 func ProviderByAlias(alias string) (ProviderFactory, bool) {
@@ -94,6 +110,26 @@ func SyncByAlias(ctx context.Context, alias string, opts Options) (*SyncStats, e
 			alias, registeredAliases(providers))
 	}
 	return syncIndexTarget(ctx, alias, opts)
+}
+
+// IngestOrchestrationReady 在发出任何 ES 写请求之前预检某个别名的全量灌数编排是否可用，
+// 是 es:cutover / es:migrate 的割接前置护栏（任务 #42）。
+//
+// 判据与 syncIndexTarget 完全同源（同一张 providers 表 + 同一个 ingestTarget 形态守卫），
+// 因此「预检通过」等价于「灌数不会在半路失败」，杜绝「先建空 v1 再在灌数步中止、留下孤儿
+// 索引」的缺陷形态。构造 provider 只是取形态、绝不触达 MySQL/ES（无查询、无网络）。
+// 不可用时返回点明别名、根因与下一步的可执行文案。
+func IngestOrchestrationReady(alias string, opts Options) error {
+	f, ok := providers[alias]
+	if !ok {
+		return fmt.Errorf("sync: 别名 %s 尚未接线数据源 Provider（已接线：%v），无法全量灌数；下一步：在 registry_provider.go 的 providers 表为其补一条数据源实现后重跑", alias, registeredAliases(providers))
+	}
+	// 仅构造以探测编排形态：def/db 传 nil 不会触达任何外部资源（provider 只存指针）。
+	p := f(nil, nil, opts)
+	if _, ok := p.(ingestTarget); !ok {
+		return fmt.Errorf("sync: 别名 %s 的数据源 %T 尚未接入全量灌数编排（checkpoint/对账/调优），割接/迁移会在灌数步失败并留下空索引；下一步：为该 provider 实现 ingestTarget 后再接入割接", alias, p)
+	}
+	return nil
 }
 
 // CompensateByAlias 按别名跑一次差量补偿（薄封装：内部仍调各别名登记的补偿实现）。

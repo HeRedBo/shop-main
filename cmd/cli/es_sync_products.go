@@ -100,9 +100,12 @@ func runESSyncProducts(cmd *cobra.Command) error {
 	defer stopProg()
 
 	opts.Stats = stats
-	// 命令名即业务域：es:sync-products 只服务商品别名，按别名查表取数据源；
-	// --index 解析到别的别名（如二期转 active 的订单）时会被当场拒绝，不会再静默灌商品数据。
-	_, runErr := sync.SyncByAlias(ctx, sync.ProductAlias, opts.ToSync())
+	// 目标业务由 --index 解析出的索引声明别名决定（SyncProducts 走 alias="" 兼容入口，内部仍按
+	// def.Alias() 查 registry_provider.go 注册表构造数据源）：商品默认值不变、输出逐字不变；
+	// 二期转 active 的订单经此入口走通全量灌数编排。护栏不因此削弱——未登记/未启用的目标会被
+	// resolveProductDef 拒绝，已登记但未接编排的 Provider 会被 ingestTarget 形态守卫显式报错，
+	// 数据源永远按 def.Alias() 取，绝不静默回落到商品逻辑。
+	_, runErr := sync.SyncProducts(ctx, opts.ToSync())
 
 	if runErr != nil {
 		return runErr

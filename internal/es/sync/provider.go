@@ -100,6 +100,38 @@ type RangePlanCarrier interface {
 	PlanRanges(ranges []IDRange)
 }
 
+// ingestTarget 是全量灌数「编排层」对某个数据源形态的最低要求：在 DocProvider 之外，
+// provider 必须能把 checkpoint sink、resume 游标、进度总量与两类对账接入编排。
+//
+// 为什么需要它（任务 #42 去商品化）：syncIndexTarget 过去用 p.(*productProvider) 把编排
+// 绑死在商品 provider 的具体类型上，订单 provider 因此被守卫当场拒「尚未接入全量灌数编排」，
+// 使 es:migrate / es:cutover --alias shop-order 建出空索引再在灌数步失败（孤儿索引）。
+// 把编排所需能力收敛成这组方法后：
+//   - 任何实现了 ingestTarget 的业务都能走完整条编排（checkpoint 落盘 / resume 续传 /
+//     setTotal / dry-run 预演 / 灌入调优 / 对账收敛）；
+//   - 未实现它的 provider（含单测 fakeProvider）仍被类型断言当场拒绝，绝不静默按商品跑
+//     —— 这条护栏只能更强、不能削弱。
+type ingestTarget interface {
+	DocProvider
+
+	// setCheckpoint 挂接本次运行的 checkpoint sink（由编排层统一创建，provider 只负责
+	// 在扫描侧回写进度）。
+	setCheckpoint(ck *checkpointSink)
+
+	// applyResume 把已加载的 checkpoint 应用到 provider 与 runOpts：LastID>0 时把游标下界
+	// 推进到该 id 之后并强制单区间单游标（k=1），使续传 id 单调不跳段。
+	applyResume(cp checkpoint, runOpts *Options)
+
+	// primeTotal 在全量首次运行（非 resume）从 provider 边界取 Total 写入 checkpoint sink，
+	// 使落盘文件从一开始就带 Total。
+	primeTotal(ctx context.Context)
+
+	// fullReconcile / resumeReconcile 是灌数后的两种对账形态：全量口径，以及 resume 时临时
+	// 去掉游标下界取全量口径再恢复（差量续传也必须按全量对账才能暴露丢数）。
+	fullReconcile(ctx context.Context, target string, stats *SyncStats, tolerance int64) error
+	resumeReconcile(ctx context.Context, target string, stats *SyncStats, tolerance int64) error
+}
+
 // WriteFunc 是 bulk 灌入的可注入出口。
 //
 // 生产默认实现走 admin.IndexBulk（内部固定 op_type=index 幂等覆盖）；

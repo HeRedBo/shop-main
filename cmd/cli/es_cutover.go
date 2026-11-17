@@ -206,6 +206,11 @@ func runESCutover(cmd *cobra.Command) error {
 		TuneIngest:      spec.TuneIngest,
 		FinalizeTimeout: spec.FinalizeTO,
 		Logf:            logf,
+		// 割接前置预检：RunCutover 在发出任何 ES 写请求之前调它确认目标别名的全量灌数编排可用；
+		// 不可用即拒绝，杠杀「先建空 <alias>_v1 再在灌数步中止、留下孤儿索引」的缺陷形态。
+		IngestCheck: func(ctx context.Context, alias string) error {
+			return sync.IngestOrchestrationReady(alias, sync.Options{IndicesDir: spec.IndicesDir})
+		},
 	})
 
 	if res != nil {
@@ -316,7 +321,7 @@ func printCutoverSummary(spec cutoverSpec, def *es.IndexDefinition) {
 	fmt.Printf("别名:         %s（当前仍是物理索引）\n", spec.Alias)
 	fmt.Printf("目标索引:     %s（声明 %s，schema_version=%d）\n", def.Name(), def.Source(), def.Version())
 	fmt.Printf("依赖插件:     %v\n", def.RequiresPlugins())
-	fmt.Printf("对账容差:     %d（DB 口径 is_del=0 AND is_show=1；负值=永不可达标）\n", spec.Tolerance)
+	fmt.Printf("对账容差:     %d（DB 口径 %s；负值=永不可达标）\n", spec.Tolerance, sync.DBCounterScope(spec.Alias))
 	fmt.Printf("--force:      %v（对账不达标仍继续割接，但绝不跳过切换后的差量补偿）\n", spec.Force)
 	fmt.Printf("灌数提速:     %v\n", spec.TuneIngest)
 	fmt.Printf("超时:         %s（收尾另给 %s 独立 ctx）\n", spec.Timeout, spec.FinalizeTO)
