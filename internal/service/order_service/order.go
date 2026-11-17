@@ -786,10 +786,10 @@ func (o *Order) GetAll() vo.ResultList {
 		}
 		order.CartInfo = cartInfo
 
-		_status := orderStatus(order.Paid, order.Status, order.RefundStatus)
+		_status := OrderStatus(order.Paid, order.Status, order.RefundStatus)
 		order.OrderStatus = _status
 		order.OrderStatusName = orderStatusStr(order.Paid, order.Status, order.ShippingType, order.RefundStatus)
-		order.PayTypeName = payTypeName(order.PayType, order.Paid)
+		order.PayTypeName = PayTypeName(order.PayType, order.Paid)
 		//global.LOG.Info(order.CartInfo)
 
 		newList = append(newList, order)
@@ -819,10 +819,10 @@ func (o *Order) GetUseCursor(nextID int64) vo.CursorResultList {
 		}
 		order.CartInfo = cartInfo
 
-		_status := orderStatus(order.Paid, order.Status, order.RefundStatus)
+		_status := OrderStatus(order.Paid, order.Status, order.RefundStatus)
 		order.OrderStatus = _status
 		order.OrderStatusName = orderStatusStr(order.Paid, order.Status, order.ShippingType, order.RefundStatus)
-		order.PayTypeName = payTypeName(order.PayType, order.Paid)
+		order.PayTypeName = PayTypeName(order.PayType, order.Paid)
 		//global.LOG.Info(order.CartInfo)
 
 		newList = append(newList, order)
@@ -830,7 +830,13 @@ func (o *Order) GetUseCursor(nextID int64) vo.CursorResultList {
 	return vo.CursorResultList{Content: newList, NextID: newNextID}
 }
 
-func orderStatus(paid, status, refundStatus int) int {
+// OrderStatus 由 paid/status/refund_status 三元组派生订单聚合状态码：
+// 1-未付款 2-未发货 3-退款中 4-待收货 5-待评价 6-已完成 7-已退款，其余落 0。
+//
+// 导出是给 ES 同步层（internal/es 的 BuildOrderDoc）复用同一份口径 —— 这是全库唯一实现，
+// 灌数侧与管理侧必须都调它，绝不能另抄一份：两处判定漂移会让索引里的 order_status
+// 与后台展示不一致，且这类错配静默可复现、事后极难定位。改签名/口径须同步 es 侧测试。
+func OrderStatus(paid, status, refundStatus int) int {
 	//todo  1-未付款 2-未发货 3-退款中 4-待收货 5-待评价 6-已完成 7-已退款
 	_status := 0
 
@@ -879,7 +885,10 @@ func orderStatusStr(paid, status, shippingType, refundStatus int) string {
 	return statusName
 }
 
-func payTypeName(pay_type string, paid int) string {
+// PayTypeName 把 pay_type 原始值映射为中文支付名；未支付（paid!=1）恒为「未支付」。
+//
+// 与 OrderStatus 同理导出：es 同步层写 pay_type_name 字段必须复用这一份，不再抄第二份。
+func PayTypeName(pay_type string, paid int) string {
 	payTypeName := "未支付"
 	if paid == 1 {
 		switch pay_type {

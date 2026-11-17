@@ -72,8 +72,8 @@ func TestDefinitionsLoadBothFiles(t *testing.T) {
 	if orders.Name() != "shop-order_v1" {
 		t.Errorf("orders 命名错误: %s", orders.Name())
 	}
-	if orders.Executable() {
-		t.Error("orders 本期是 draft，不得进入可执行清单")
+	if !orders.Executable() {
+		t.Error("orders 阶段二已接线（status=active），必须进入可执行清单")
 	}
 
 	// Registry 的可执行清单是 migrate/rebuild 的唯一入口
@@ -82,8 +82,8 @@ func TestDefinitionsLoadBothFiles(t *testing.T) {
 		t.Fatalf("Register 失败: %v", err)
 	}
 	executable := r.ExecutableDefinitions()
-	if len(executable) != 1 || executable[0].Alias() != "shop-product" {
-		t.Errorf("ExecutableDefinitions 应只含 shop-product，实际: %v", aliasesOf(executable))
+	if len(executable) != 2 {
+		t.Errorf("阶段二后 ExecutableDefinitions 应含 shop-product 与 shop-order 两条，实际: %v", aliasesOf(executable))
 	}
 	if len(r.All()) != 2 {
 		t.Errorf("All 应返回 2 份定义")
@@ -202,8 +202,8 @@ func TestDefinitionMetaFields(t *testing.T) {
 	if len(orders.Meta().CopyToOnlyFields) != 0 {
 		t.Errorf("orders copy_to_only_fields 期望空，实际: %v", orders.Meta().CopyToOnlyFields)
 	}
-	if orders.Status() != StatusDraft {
-		t.Errorf("orders status 期望 draft，实际: %s", orders.Status())
+	if orders.Status() != StatusActive {
+		t.Errorf("orders status 期望 active（阶段二已接线），实际: %s", orders.Status())
 	}
 	if orders.Meta().Notes == "" {
 		t.Error("orders notes 必须写明本期不接线与日期格式互不兼容的发现")
@@ -489,8 +489,8 @@ func TestRegistryAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRegistry 失败: %v", err)
 	}
-	if len(full.ExecutableDefinitions()) != 1 {
-		t.Errorf("LoadRegistry 后期望 1 个可执行定义，实际 %d", len(full.ExecutableDefinitions()))
+	if len(full.ExecutableDefinitions()) != 2 {
+		t.Errorf("LoadRegistry 后期望 2 个可执行定义（shop-product + shop-order），实际 %d", len(full.ExecutableDefinitions()))
 	}
 }
 
@@ -579,7 +579,7 @@ func TestDefinitionMatchesUpstreamSource(t *testing.T) {
 		wantCount int
 	}{
 		{"shop-product", "../../../product-consumer/sql/shop-product.json", 18},
-		{"shop-order", "../../../order-consumer/sql/shop-order-date-format.json", 13},
+		{"shop-order", "../../../order-consumer/sql/shop-order.json", 13},
 	}
 
 	for _, tc := range cases {

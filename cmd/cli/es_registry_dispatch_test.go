@@ -3,10 +3,12 @@ package main
 // es_registry_dispatch_test.go 钉住任务 #37 的装配层契约：migrate / rebuild / cutover
 // 三个命令的灌数、计数、差量补偿注入点都必须**按别名查表**，而不是恒调商品实现。
 //
-// 判别方式：拿一个「已登记声明但未接线 Provider」的别名（shop-order）直接调适配器。
+// 判别方式：拿一个「任何注册表都不存在」的别名（shop-unknown）直接调适配器。
 // 查表实现会在触达 MySQL/ES 之前拒绝（单测环境没有 DB/ES，拒绝信息本身就是证据）；
 // 一旦有人把它改回 sync.SyncProducts / sync.Compensate / es.ProductDocCount，报错就会
 // 变成「MySQL 未初始化」之类的下游故障 —— 本用例变红。
+// 注：shop-order 已于 #38 三口接线，不能再作为「未接线」样本；shop-unknown 不存在于任何注册表，
+// 不会因业务接入而变飘。
 
 import (
 	"context"
@@ -18,7 +20,7 @@ import (
 )
 
 // 未接线的别名：既不在 providers，也不在 compensators / dbCounters。
-const unwiredTestAlias = "shop-order"
+const unwiredTestAlias = "shop-unknown"
 
 func TestIngestAdapters_DispatchByAlias(t *testing.T) {
 	cases := []struct {

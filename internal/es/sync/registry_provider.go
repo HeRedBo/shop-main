@@ -37,6 +37,12 @@ var providers = map[string]ProviderFactory{
 	ProductAlias: func(db *gorm.DB, def *es.IndexDefinition, opts Options) DocProvider {
 		return newProductProvider(db, def, opts)
 	},
+	// shop-order（阶段二接入）：_id=order_id（字符串订单号）、routing=strconv.FormatInt(uid,10)，
+	// 与 order-consumer 写入 / shop-search-api 读取逐字一致；全量扫 store_order WHERE is_del=0，
+	// 每批一条 WHERE oid IN 预取 cart_info 装配（详见 order.go）。登记本条后按别名分发才命中订单 provider。
+	OrderAlias: func(db *gorm.DB, def *es.IndexDefinition, opts Options) DocProvider {
+		return newOrderProvider(db, def, opts)
+	},
 }
 
 // compensateFactory 是差量补偿的登记形态，与包内 Compensate 逐字同签名。
@@ -45,6 +51,7 @@ type compensateFactory func(ctx context.Context, target string, since time.Time,
 // compensators 是「别名 → 差量补偿实现」注册表。
 var compensators = map[string]compensateFactory{
 	ProductAlias: Compensate,
+	OrderAlias:   CompensateOrder,
 }
 
 // DBCounter 是「别名 → DB 期望数」的口径签名（无别名参数，便于 es:status 直接调用）。
@@ -56,6 +63,7 @@ type DBCounter func(ctx context.Context) (int64, error)
 // 绝不拿商品口径（is_del=0 AND is_show=1）去套别的索引 —— 口径错配比「没比」更有害。
 var dbCounters = map[string]DBCounter{
 	ProductAlias: es.ProductDocCount,
+	OrderAlias:   es.OrderDocCount,
 }
 
 // ProviderByAlias 查表返回某个别名的数据源构造器。

@@ -84,16 +84,19 @@ func toAnyTable[V any](in map[string]V) map[string]any {
 
 // TestSyncByAlias_UnwiredAliasRejectedBeforePipeline：未接线的别名必须在任何扫库之前被拒。
 // 若把 SyncByAlias 退回恒调商品实现，err==nil 且 boundsCalled==true → 两条断言皆红。
+//
+// 用 shop-unknown（任何注册表都不存在的别名）作「未接线」样本：#38 后 shop-order 已三口
+// 接线，再拿它当未登记示例就测不到「拒绝」这条分支了（会命中订单 provider 走进编排）。
 func TestSyncByAlias_UnwiredAliasRejectedBeforePipeline(t *testing.T) {
 	boundsCalled := isolatePipelineSinks(t)
 
-	_, err := SyncByAlias(context.Background(), "shop-order", Options{
+	_, err := SyncByAlias(context.Background(), "shop-unknown", Options{
 		IndicesDir: writeLookupRegistry(t),
-		Index:      "shop-order",
+		Index:      "shop-unknown",
 		AssumeYes:  true,
 	})
 	if err == nil {
-		t.Fatal("未接线别名 shop-order 必须被拒，却返回成功（缺陷回归：恒跑商品实现）")
+		t.Fatal("未接线别名 shop-unknown 必须被拒，却返回成功（缺陷回归：恒跑商品实现）")
 	}
 	if !strings.Contains(err.Error(), "尚未接线数据源 Provider") {
 		t.Errorf("报错必须点明「未接线数据源 Provider」，got=%q", err.Error())
@@ -182,7 +185,8 @@ func TestNewProvider_NonProductShapeRejectedByOrchestration(t *testing.T) {
 // 注入一条假表项证明「传什么别名就跑什么实现」，而不是恒调商品 Compensate。
 func TestCompensateByAlias_DispatchesByTableAndRejectsUnwired(t *testing.T) {
 	t.Run("未登记别名必须拒", func(t *testing.T) {
-		_, err := CompensateByAlias(context.Background(), "shop-order", "shop-order_v1", time.Unix(0, 0), CompensateOptions{})
+		// shop-unknown 不在 compensators 表；shop-order 已于 #38 登记 CompensateOrder，不能再当未接线样本。
+		_, err := CompensateByAlias(context.Background(), "shop-unknown", "shop-unknown_v1", time.Unix(0, 0), CompensateOptions{})
 		if err == nil || !strings.Contains(err.Error(), "尚未接线差量补偿实现") {
 			t.Fatalf("未接线别名必须报错并点明补偿未接线，got=%v", err)
 		}
@@ -217,7 +221,7 @@ func TestDBCountByAlias_SharedSingleSourceOfTruth(t *testing.T) {
 	if _, ok := DBCounterFor(ProductAlias); !ok {
 		t.Fatalf("别名 %s 必须登记 DB 计数口径（否则 es:status 会报 count_comparable=false）", ProductAlias)
 	}
-	if _, ok := DBCounterFor("shop-order"); ok {
+	if _, ok := DBCounterFor("shop-unknown"); ok {
 		t.Error("未登记的业务不得有 DB 计数口径（口径错配比没比更有害）")
 	}
 
@@ -227,7 +231,7 @@ func TestDBCountByAlias_SharedSingleSourceOfTruth(t *testing.T) {
 		t.Errorf("商品计数口径必须是 es.ProductDocCount 本体（单点拥有口径），got=%x want=%x", got, want)
 	}
 
-	if _, err := DBCountByAlias(context.Background(), "shop-order"); err == nil ||
+	if _, err := DBCountByAlias(context.Background(), "shop-unknown"); err == nil ||
 		!strings.Contains(err.Error(), "未登记 DB 计数口径") {
 		t.Errorf("未登记别名必须拒绝统计，got=%v", err)
 	}

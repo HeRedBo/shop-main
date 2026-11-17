@@ -1,18 +1,19 @@
 {
   // ==========================================================================
-  // shop-order 索引结构声明 —— 【本期只落盘、不接线】（_meta.status = draft）
+  // shop-order 索引结构声明 —— 【阶段二已接线】（_meta.status = active）
   // ==========================================================================
   //
-  // 来源：order-consumer/sql/shop-order-date-format.json（全文原样，层级/数值/字段顺序未改），
-  // 本文件只追加注释与 _meta。
+  // 结构本体来源：order-consumer/sql/shop-order.json（13 字段、date 无 format 变体，
+  // 全文原样，层级/数值/字段顺序未改），本文件只追加注释与 _meta。
   //
-  // 为什么不接线：
-  //   - 本期没有 OrderIndex 文档 struct，也没有对应的 sync Provider（区间扫描 / bulk 灌入 /
-  //     对账期望值都还没实现），把它放进可执行清单会让 es:migrate 去建一个无法灌数的索引；
-  //   - 因此 Registry 只把 _meta.status=active 的定义纳入 ExecutableDefinitions()，
-  //     orders 仅参与 LoadDefinitions 的解析、校验与指纹计算（definition_test.go 覆盖）。
-  //   - 二期接 orders 时：新增 internal/es/doc_order.go + internal/es/sync/order.go，
-  //     并把这里的 status 改为 active，无需改 Registry 代码。
+  // 接线现状（阶段二）：
+  //   - 文档结构在 internal/es/doc_order.go（OrderIndex，13 个 json tag 与本 properties 严格互等）；
+  //   - 数据源 Provider / 差量补偿 / DB 计数口径在 internal/es/sync/order.go，已登记进
+  //     registry_provider.go 的三张「别名 → 函数」表（键 shop-order）；
+  //   - status=active 后本定义进入 ExecutableDefinitions()，es:migrate / es:status 按别名逐条处理。
+  //   - 边界：全量灌数编排（syncIndexTarget 的 checkpoint/对账/调优）仍是商品专属形态，
+  //     SyncByAlias("shop-order") 会如实报「尚未接入全量灌数编排」；订单全量由 order-consumer
+  //     增量链路维护，本仓库的灌数证据落在 NewProvider 命中 + 通用 Run 直连（见 order_test.go）。
   //
   // 与 shop-product（indices/product.jsonc）的关键差异 —— 两套索引不能复用同一份配置假设：
   //   | 项              | shop-product        | shop-order            |
@@ -21,7 +22,7 @@
   //   | number_of_replicas | 1              | 0（无副本）           |
   //   | index.sort      | price asc/sales desc/ficti desc | update_time desc |
   //   | analyzer 体系   | ik_max_word/ik_smart + pinyin + 单字 ngram | edge_ngram(1-18) + ngram + pinyin |
-  //   | date format     | 无显式 format（默认 RFC3339） | 显式 yyyy-MM-dd HH:mm:ss |
+  //   | date format     | 无显式 format（默认 RFC3339） | 无显式 format（默认 RFC3339，见下） |
   //   | _source excludes| 排除 4 个大文本     | 无 excludes           |
   //   | 字段数          | 18（含虚拟 desc）   | 13（无 copy_to）      |
   //
@@ -31,11 +32,11 @@
   "_meta": {
     "alias": "shop-order",
     "schema_version": 1,
-    "status": "draft",
+    "status": "active",
     "next_version_rule": "<alias>_v<N+1>",
     "copy_to_only_fields": [],
     "requires_plugins": ["analysis-pinyin"],
-    "notes": "本期只落盘不接线。三个 date 字段显式声明 yyyy-MM-dd HH:mm:ss，而 order-consumer 实际用 time.Time 默认序列化写入 RFC3339，两者互不兼容：真按本 mapping 建索引，order-consumer 写入会 date_parse_exception。二期接线前必须先决定采用哪一份并同步 order-consumer 的序列化。"
+    "notes": "阶段二已接线。日期序列化二选一已定为 A：三个 date 字段【无显式 format】，走 ES 默认 strict_date_optional_time||epoch_millis，与本仓库 doc_order.go 用 time.Time 默认序列化（RFC3339）自洽，也与 order-consumer 写入一致。严禁改回 yyyy-MM-dd HH:mm:ss 或给订单单独做时间格式化——那会让本仓库与 order-consumer 的写入双双 date_parse_exception。_id=order_id（字符串订单号，非数字主键 id），routing=strconv.FormatInt(uid,10)；本索引 1 shard/0 replica、无 analysis-ik 依赖、无 is_show 维度。"
   },
 
   "settings": {
@@ -164,10 +165,8 @@
           }
         }
       },
-      // 订单内商品 id 集合：keyword + doc_values:false。
-      // 【二期装配要点】这里是 keyword 单值语义，而一单多商品天然是数组，
-      // 接线时必须确认写入侧产出的是数组还是拼接串（与 shop-search-api 现有查询逐条比对），
-      // 若需要 nested 结构则属于 mapping 变更，必须走重建。
+      // 订单内商品 id 集合：keyword + doc_values:false。keyword 天然支持数组语义，
+      // 装配侧（doc_order.BuildOrderDoc）产出【int64 数组】（与 order-consumer 一致），非拼接串。
       "product_ids": {
         "type": "keyword",
         "doc_values": false
@@ -195,32 +194,24 @@
       },
 
       // ======================================================================
-      // 【Phase 0 决定性发现 —— 二期接线前必须先解决，否则写入 100% 失败】
-      // 本变体的三个 date 显式声明 format: "yyyy-MM-dd HH:mm:ss"。
-      // 但 order-consumer 实际写入用的是 time.Time 的 stdlib 默认序列化（RFC3339）：
-      //   order-consumer/consumer/order_index.go:11,16,17  —— 字段类型是 time.Time
-      //   order-consumer/consumer/order_consumer.go:55     —— 直接 marshal 结构体，无自定义格式化
-      // 两种形态【互不兼容】：真按本 mapping 建索引，order-consumer 的每一条写入都会
-      // date_parse_exception（strict 下逐条失败，不是告警）。
-      // 同目录另有 order-consumer/sql/shop-order.json —— 它的 date 【没有 format】，
-      // 与 Go 写入器自洽（等价于 products 的默认 strict_date_optional_time||epoch_millis）。
-      // 因此二期必须先二选一：
-      //   A. 采用 shop-order.json（无 format）=> 保持 Go 写入 RFC3339，本文件按 A 重写；
-      //   B. 保留本 format => 必须同步改 order-consumer 的序列化（跨仓库变更，还需重灌历史数据）。
-      // 选定前本索引不得进入可执行清单。这也是 _meta.date_format 元数据位存在的原因：
-      // products（无 format）与 orders（有 format）的时间序列化绝对不能共用一个函数。
+      // 【日期序列化：阶段二已二选一定为 A —— 无 format，走 RFC3339】
+      // 三个 date 字段【不声明 format】，走 ES 默认 strict_date_optional_time||epoch_millis，
+      // 与本仓库写入器自洽：
+      //   internal/es/doc_order.go        —— pay_time/create_time/update_time 是 time.Time，
+      //                                      由 stdlib 默认序列化（RFC3339Nano），无 MarshalJSON；
+      //   order-consumer/consumer/order_consumer.go:55 —— 同样直接 marshal time.Time，无格式化。
+      // 若改回 "yyyy-MM-dd HH:mm:ss"，本仓库与 order-consumer 的每一条写入都会 date_parse_exception
+      // （strict 下逐条失败，不是告警），且需重灌历史数据。故此处与上游 shop-order.json（无 format
+      // 变体）逐字对齐，definition_test.go 的 TestDefinitionMatchesUpstreamSource 用该文件比指纹。
       // ======================================================================
       "pay_time": {
-        "type": "date",
-        "format": "yyyy-MM-dd HH:mm:ss"
+        "type": "date"
       },
       "create_time": {
-        "type": "date",
-        "format": "yyyy-MM-dd HH:mm:ss"
+        "type": "date"
       },
       "update_time": {
-        "type": "date",
-        "format": "yyyy-MM-dd HH:mm:ss"
+        "type": "date"
       }
     }
   }

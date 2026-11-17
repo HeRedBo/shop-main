@@ -103,6 +103,24 @@ func ProductDocCount(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// OrderDocCount 按对账口径统计应进入 shop-order 索引的订单数。
+//
+// 口径与 orderProvider.filter / BuildOrderDoc 完全一致：订单【没有 is_show 概念】，
+// 入索引资格只有「未软删」——GORM 的 soft_delete.DeletedAt(softDelete:flag) 会自动为
+// 查询追加 is_del=0，这里再显式加一次让 SQL 自解释（重复条件不影响结果集）。
+// 绝不能拿商品口径（多一条 is_show=1）去套订单，那会少算、对账永远不通过。
+func OrderDocCount(ctx context.Context) (int64, error) {
+	if global.Db == nil {
+		return 0, fmt.Errorf("es: MySQL 客户端未初始化，无法统计订单期望数")
+	}
+	var n int64
+	q := global.Db.WithContext(ctx).Model(&models.StoreOrder{}).Where("is_del = 0")
+	if err := q.Count(&n).Error; err != nil {
+		return 0, fmt.Errorf("es: 统计订单期望数失败（is_del=0）: %w", err)
+	}
+	return n, nil
+}
+
 // ---------------------------------------------------------------------------
 // Cluster：割接与状态检查共用的集群原语
 // ---------------------------------------------------------------------------
