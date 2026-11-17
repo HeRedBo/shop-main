@@ -16,6 +16,40 @@ import (
 	"github.com/IBM/sarama"
 )
 
+// orderSyncProducer 抽象订单对外投递所需的最小 Kafka 同步生产者能力。
+// *mq.SyncProducer 天然满足该接口；单测可用假生产者替换，避免连接真实 Kafka。
+type orderSyncProducer interface {
+	Send(msg *sarama.ProducerMessage) (int32, int64, error)
+}
+
+// 可测试性接缝：默认走真实 mq / global.Db，行为与原内联调用完全一致。
+// 单测通过替换这三个变量，即可在无 Kafka/MySQL 环境下确定性验证
+// 「转发失败向上报错」与「幂等命中不重复投递」两条关键语义。
+var (
+	// orderSyncProducerFn 获取对外投递 topic 的 Kafka 同步生产者；未初始化时返回 nil。
+	orderSyncProducerFn = func() orderSyncProducer {
+		p := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer)
+		if p == nil {
+			return nil // 避免把 nil 指针装箱成非 nil 接口，破坏下游 nil 判定
+		}
+		return p
+	}
+
+	// orderEventProcessedFn 幂等判定：查 processed_events 是否已存在该 event_id（语义与原内联查询一致）。
+	orderEventProcessedFn = func(eventId string) (bool, error) {
+		var count int64
+		if err := global.Db.Model(&models.ProcessedEvent{}).Where("event_id = ?", eventId).Count(&count).Error; err != nil {
+			return false, err
+		}
+		return count > 0, nil
+	}
+
+	// markOrderProcessedFn 写入幂等记录：仅在转发成功后调用，保证「失败可重试、成功不重复」。
+	markOrderProcessedFn = func(record models.ProcessedEvent) error {
+		return global.Db.Create(&record).Error
+	}
+)
+
 // OrderHandler 订单事件处理器
 // 处理 order.created / order.updated / order.deleted 事件
 // 转发到 Kafka 供下游消费
@@ -47,11 +81,11 @@ func (h *OrderHandler) Handle(ctx context.Context, msg *worker.Message) error {
 		eventId, eventType, aggregateId, offset)
 
 	// 2. 幂等检查：查询 processed_events 表是否已处理该 event_id
-	var count int64
-	if err := global.Db.Model(&models.ProcessedEvent{}).Where("event_id = ?", eventId).Count(&count).Error; err != nil {
+	isProcessed, err := orderEventProcessedFn(eventId)
+	if err != nil {
 		return fmt.Errorf("查询幂等记录失败: %w", err)
 	}
-	if count > 0 {
+	if isProcessed {
 		Logger().Infof("[OrderHandler] 事件已处理，跳过: event_id=%s", eventId)
 		return nil
 	}
@@ -64,24 +98,32 @@ func (h *OrderHandler) Handle(ctx context.Context, msg *worker.Message) error {
 	}
 
 	// 4. 根据 event_type 执行业务逻辑
+	// 转发失败必须向上返回 error：由 worker 的重试/死信机制接管；
+	// 此时不写幂等标记，保证消息可被重新投递而非静默丢失。
 	switch eventType {
 	case "order.created":
 		Logger().Infof("[OrderHandler] 订单创建事件: order_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
-		h.publishToKafka(payload, orderEnum.OperationCreate)
+		if err := h.publishToKafka(payload, orderEnum.OperationCreate); err != nil {
+			return err
+		}
 
 	case "order.updated":
 		Logger().Infof("[OrderHandler] 订单更新事件: order_id=%s, payload_keys=%v", aggregateId, mapKeys(payload))
-		h.publishToKafka(payload, orderEnum.OperationUpdate)
+		if err := h.publishToKafka(payload, orderEnum.OperationUpdate); err != nil {
+			return err
+		}
 
 	case "order.deleted":
 		Logger().Infof("[OrderHandler] 订单删除事件: order_id=%s", aggregateId)
-		h.publishToKafka(payload, orderEnum.OperationDelete)
+		if err := h.publishToKafka(payload, orderEnum.OperationDelete); err != nil {
+			return err
+		}
 
 	default:
 		Logger().Warnf("[OrderHandler] 未知/未处理事件类型: event_type=%s, event_id=%s", eventType, eventId)
 	}
 
-	// 5. 写入幂等记录
+	// 5. 写入幂等记录（位于转发成功之后：失败已提前 return，不会落标记，故可重试；成功才落标记，故不重复）
 	processed := models.ProcessedEvent{
 		EventId:     eventId,
 		EventType:   eventType,
@@ -89,7 +131,7 @@ func (h *OrderHandler) Handle(ctx context.Context, msg *worker.Message) error {
 		ProcessedAt: time.Now(),
 		CreatedAt:   time.Now(),
 	}
-	if err := global.Db.Create(&processed).Error; err != nil {
+	if err := markOrderProcessedFn(processed); err != nil {
 		// 唯一约束冲突 = 已被其他 worker 处理，不算错误
 		if isDuplicateKeyError(err) {
 			Logger().Infof("[OrderHandler] 幂等记录已存在（并发写入），跳过: event_id=%s", eventId)
@@ -102,21 +144,23 @@ func (h *OrderHandler) Handle(ctx context.Context, msg *worker.Message) error {
 	return nil
 }
 
-// publishToKafka 将事件转发到 shop-product topic，供下游消费
-// 注意：订单 aggregateId 是 OrderId（string），旧代码使用 Uid 作为 Kafka Key
-// 错误不中断主流程，仅记录日志
-func (h *OrderHandler) publishToKafka(payload map[string]interface{}, operation string) {
+// publishToKafka 将订单事件转发到对外投递 topic（order.Topic = shop-order），供下游 order-consumer 消费。
+// 任意失败都会向上返回 error：由 worker 的重试/死信机制接管，避免转发失败被静默吞掉导致消息丢失。
+// 注意：订单 aggregateId 是 OrderId（string），旧代码使用 Uid 作为 Kafka Key。
+func (h *OrderHandler) publishToKafka(payload map[string]interface{}, operation string) error {
 	// 1. 从 payload 中提取 Uid 作为 Kafka Key（与旧代码行为一致）
 	uidVal, ok := payload["uid"]
 	if !ok {
-		Logger().Errorf("[OrderHandler] payload 中缺少 uid 字段，跳过转发: operation=%s", operation)
-		return
+		err := fmt.Errorf("payload 中缺少 uid 字段: operation=%s", operation)
+		Logger().Errorf("[OrderHandler] %v，终止转发", err)
+		return err
 	}
 	// JSON 反序列化数字为 float64
 	uidFloat, ok := uidVal.(float64)
 	if !ok {
-		Logger().Errorf("[OrderHandler] uid 类型断言失败: %T", uidVal)
-		return
+		err := fmt.Errorf("uid 类型断言失败: %T", uidVal)
+		Logger().Errorf("[OrderHandler] %v", err)
+		return err
 	}
 	uid := int64(uidFloat)
 
@@ -124,13 +168,13 @@ func (h *OrderHandler) publishToKafka(payload map[string]interface{}, operation 
 	orderData, err := json.Marshal(payload)
 	if err != nil {
 		Logger().Errorf("[OrderHandler] payload 序列化失败: %v", err)
-		return
+		return fmt.Errorf("payload 序列化失败: %w", err)
 	}
 
 	var storeOrder models.StoreOrder
 	if err := json.Unmarshal(orderData, &storeOrder); err != nil {
 		Logger().Errorf("[OrderHandler] payload 反序列化为 StoreOrder 失败: %v", err)
-		return
+		return fmt.Errorf("payload 反序列化为 StoreOrder 失败: %w", err)
 	}
 
 	// 3. 构造 OrderMsg
@@ -142,14 +186,15 @@ func (h *OrderHandler) publishToKafka(payload map[string]interface{}, operation 
 	msgBytes, err := json.Marshal(orderMsg)
 	if err != nil {
 		Logger().Errorf("[OrderHandler] OrderMsg 序列化失败: %v", err)
-		return
+		return fmt.Errorf("OrderMsg 序列化失败: %w", err)
 	}
 
-	// 4. 发送到 Kafka
-	producer := mq.GetKafkaSyncProducer(mq.DefaultKafkaSyncProducer)
+	// 4. 发送到 Kafka（通过可注入接缝获取同步生产者）
+	producer := orderSyncProducerFn()
 	if producer == nil {
-		Logger().Error("[OrderHandler] Kafka Producer 未初始化，跳过转发")
-		return
+		err := fmt.Errorf("Kafka Producer 未初始化，无法转发订单事件: operation=%s", operation)
+		Logger().Errorf("[OrderHandler] %v", err)
+		return err
 	}
 
 	msg := &sarama.ProducerMessage{
@@ -161,9 +206,10 @@ func (h *OrderHandler) publishToKafka(payload map[string]interface{}, operation 
 	partition, offset, err := producer.Send(msg)
 	if err != nil {
 		Logger().Errorf("[OrderHandler] 转发到 Kafka 失败: operation=%s, order_id=%s, err=%v", operation, storeOrder.OrderId, err)
-		return
+		return fmt.Errorf("转发到 Kafka 失败: operation=%s, order_id=%s: %w", operation, storeOrder.OrderId, err)
 	}
 
 	Logger().Infof("[OrderHandler] 转发成功: operation=%s, order_id=%s, uid=%d, partition=%d, offset=%d",
 		operation, storeOrder.OrderId, uid, partition, offset)
+	return nil
 }
