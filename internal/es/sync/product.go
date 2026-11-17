@@ -25,8 +25,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// ProductAlias 是本期唯一接线索引的别名（与 indices/product.jsonc 的 _meta.alias 一致）。
-// SyncProducts 据此从 Registry 定位产品索引声明；二期 orders 走各自的 Provider/别名。
+// ProductAlias 是商品业务索引的别名（与 indices/product.jsonc 的 _meta.alias 一致）。
+// SyncProducts 据此从 Registry 定位产品索引声明；订单业务用各自的 OrderAlias 与 Provider（registry_provider.go 三张表按别名分发）。
 const ProductAlias = "shop-product"
 
 // productScanColumns 是全量扫描的列裁剪清单。
@@ -964,7 +964,7 @@ func resolveProductDef(reg *es.Registry, target string, strict bool) (*es.IndexD
 }
 
 // executableAliases 返回当前 active（可执行）定义的别名升序清单，供严格校验报错时列出可用名称。
-// 只列 active，绝不把 draft（如 shop-order）当作「可用」误导用户。
+// 只列 active，绝不把尚未接线（status=draft）的定义当作「可用」误导用户。
 func executableAliases(reg *es.Registry) []string {
 	exec := reg.ExecutableDefinitions()
 	out := make([]string, 0, len(exec))

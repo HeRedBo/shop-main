@@ -376,7 +376,7 @@ graph LR
 | 事件源 | 消息结构 | Kafka Topic | 消费者 | ES 操作 |
 | :--- | :--- | :--- | :--- | :--- |
 | 商品上架/下架 | `ProductMsg{operation, is_show}` | `shop-product` | product-consumer | BulkCreate / DeleteRefresh |
-| 订单创建/更新 | `OrderMsg{operation, status}` | `shop-order` | order-consumer | BulkCreate / Delete |
+| 订单创建/更新 | `OrderMsg{operation, status}` | `shop-order` | order-consumer | Index（op_type=index 覆盖写、幂等）/ Delete |
 
 - **消息定义** — 商品/订单 Model 层定义 `ProductMsg` / `OrderMsg`，携带 `operation` 操作类型
 - **推送时机** — Service 层在业务变更后通过 Kafka SyncProducer 推送消息

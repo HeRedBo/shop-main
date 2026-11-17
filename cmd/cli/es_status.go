@@ -38,7 +38,7 @@ var esStatusCmd = &cobra.Command{
 		"  4) 相关物理索引的 doc 数、主/副分片数、health、store.size；\n" +
 		"  5) schema_version：优先读 mappings._meta，读不到再回退物理索引名尾缀 _v<N>；\n" +
 		"  6) 声明体指纹 vs 线上结构指纹，直接给出 noop / inplace / rebuild 判定与原因；\n" +
-		"  7) ES _count 与 MySQL 期望数（口径 is_del=0 AND is_show=1）的差异。\n" +
+		"  7) ES _count 与 MySQL 期望数的差异（期望数口径按别名从注册表 dbCounterScopes 查表、与实跑同源；未登记 DB 计数口径的别名跳过比对）。\n" +
 		"\n" +
 		"退出码：只有取数失败（连不上 ES、读回显报错、别名未登记等）才返回 1；" +
 		"结构漂移、计数差异、别名未割接都属于「如实报告」，不改退出码，便于人工与脚本共用。",

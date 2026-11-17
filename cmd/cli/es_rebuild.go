@@ -291,7 +291,7 @@ func printRebuildSummary(spec rebuildSpec, def *es.IndexDefinition) {
 	fmt.Printf("别名:         %s（前置：必须已存在且唯一指向一个旧索引）\n", spec.Alias)
 	fmt.Printf("新索引:       %s（声明 %s，schema_version=%d）\n", def.Name(), def.Source(), def.Version())
 	fmt.Printf("依赖插件:     %v\n", def.RequiresPlugins())
-	fmt.Printf("对账容差:     %d（DB 口径 is_del=0 AND is_show=1，由 rebuild 第 5 步真实回读后判定，内层灌数不做对账）\n", spec.Tolerance)
+	fmt.Printf("对账容差:     %d（DB 口径 %s，由 rebuild 第 5 步真实回读后判定，内层灌数不做对账）\n", spec.Tolerance, sync.DBCounterScope(spec.Alias))
 	fmt.Printf("灌数提速:     %v   失败保留新索引: %v\n", spec.TuneIngest, spec.KeepNewOnFailure)
 	fmt.Printf("删除旧索引:   %v（默认保留，可直接回滚）\n", spec.DropOld)
 	fmt.Printf("超时:         %s（收尾另给 %s 独立 ctx）\n", spec.Timeout, spec.FinalizeTO)

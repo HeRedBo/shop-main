@@ -9,7 +9,10 @@ package sync
 //
 // 本文件把 cmd/cli/es_status.go 已验收的「别名 → 函数」查表范式推广到灌数层：
 // 编排侧只按别名调下面三个薄封装，新增业务 = 在三张表各补一条表项，调用点一行不改。
-// 本期只有 shop-product 一条 —— 行为与升级前逐字一致，差别只在「取不到就报错」而非「回落商品」。
+// 现已接入两条业务：shop-product（商品）与 shop-order（订单，阶段二）；按别名取不到即报错，绝不回落商品。
+// 再加一条的范式：在 indices/ 放一份 <alias>.jsonc（_meta.alias 即键），然后在 providers / compensators /
+// dbCounters（配套 dbCounterScopes 的人话口径）三张表各补一条以该 alias 为键的表项即可——上层
+// es:migrate / es:rebuild / es:cutover / es:status 按别名逐条循环，调用点一行不改。
 //
 // 三张表分别覆盖一次灌数的三个口径面：
 //   - providers   ：全量灌数读哪个数据源（DocProvider）

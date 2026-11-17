@@ -41,7 +41,7 @@ const (
 	// StatusActive 已接线：进入 Registry.ExecutableDefinitions()，es:migrate/es:rebuild 会处理它。
 	StatusActive = "active"
 	// StatusDraft 仅落盘：LoadDefinitions 会解析、校验、算指纹，但不进入可执行清单。
-	// orders.jsonc 本期即为此状态（文档 struct 与同步 Provider 都还没实现）。
+	// 用于「声明已写但数据源 / Provider 尚未接线」的索引；接线完成后转 active（orders.jsonc 二期即已从 draft 转 active）。
 	StatusDraft = "draft"
 )
 

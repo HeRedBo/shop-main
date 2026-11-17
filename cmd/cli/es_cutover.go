@@ -207,7 +207,7 @@ func runESCutover(cmd *cobra.Command) error {
 		FinalizeTimeout: spec.FinalizeTO,
 		Logf:            logf,
 		// 割接前置预检：RunCutover 在发出任何 ES 写请求之前调它确认目标别名的全量灌数编排可用；
-		// 不可用即拒绝，杠杀「先建空 <alias>_v1 再在灌数步中止、留下孤儿索引」的缺陷形态。
+		// 不可用即拒绝，杜绝「先建空 <alias>_v1 再在灌数步中止、留下孤儿索引」的缺陷形态。
 		IngestCheck: func(ctx context.Context, alias string) error {
 			return sync.IngestOrchestrationReady(alias, sync.Options{IndicesDir: spec.IndicesDir})
 		},
@@ -255,7 +255,7 @@ func cutoverStdinIsInteractive() bool {
 }
 
 // newCutoverSyncFunc 把按别名查表的灌数入口（sync.SyncByAlias）适配成 es.SyncFunc ——
-// 全项目唯一一处割接层与 #5 流水线之间的耦合点（一期只有 shop-product 一条表项）。
+// 全项目唯一一处割接层与 #5 流水线之间的耦合点（商品、订单两条表项都经此按别名分发）。
 //
 // 三个刻意设置：
 //   - TuneIngest=false：settings 的生命周期由割接编排独占（提速 + 无论成败都要恢复），

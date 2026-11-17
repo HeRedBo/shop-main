@@ -344,7 +344,7 @@ func migrateFirstCreate(ctx context.Context, def *IndexDefinition, c RebuildTarg
 	dbExpected, err := opts.DBCount(ctx, alias)
 	if err != nil {
 		rec.Verdict = string(VerdictError)
-		rec.Error = fmt.Sprintf("统计商品期望数失败: %v", err)
+		rec.Error = fmt.Sprintf("统计 DB 期望数失败 [alias=%s]: %v", alias, err)
 		return rec
 	}
 	// 建索引时不挂别名：直接用 BodyJSON（已剔除 _meta/aliases），与蓝绿新建同一 body。
