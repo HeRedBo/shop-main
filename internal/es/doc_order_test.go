@@ -23,8 +23,8 @@ import (
 )
 
 // orderExpectedFields 是 OrderIndex 的 13 个 json tag，顺序与 internal/es/doc_order.go
-// 的字段声明、以及 orders.jsonc properties 书写顺序逐字一致。比 order-consumer 的 12 字段
-// 多一个 pay_type_name（本仓库灌数现算），这是本索引的第 13 个字段。
+// 的字段声明、以及 orders.jsonc properties 书写顺序逐字一致；与 order-consumer 的
+// OrderIndex 同为 13 字段双向互等（pay_type_name 两侧同表现算，即本索引的第 13 个字段）。
 var orderExpectedFields = []string{
 	"order_id", "order_id_suffix", "names", "product_ids", "uid", "pay_time", "pay_type",
 	"pay_type_name", "refund_status", "shipping_type", "order_status", "create_time", "update_time",
@@ -241,11 +241,11 @@ func TestBuildOrderDocCartVariants(t *testing.T) {
 
 	// ③ 畸形：非法 JSON / 缺 product_info / 混入合法条目 —— 不 panic，只跳过畸形，保留合法。
 	mixed := []string{
-		`{not-json`,                              // 非法 JSON：跳过
+		`{not-json`, // 非法 JSON：跳过
 		`{"product_info":{"id":0,"store_name":""}}`, // 无商品信息：跳过
-		`{"unrelated":1}`,                          // 无 product_info：跳过
+		`{"unrelated":1}`, // 无 product_info：跳过
 		`{"product_info":{"id":7,"store_name":"有效品"}}`, // 合法：保留
-		``,                                         // 空串：跳过
+		``, // 空串：跳过
 	}
 	d3, ok3 := BuildOrderDoc(live(), mixed)
 	if !ok3 {

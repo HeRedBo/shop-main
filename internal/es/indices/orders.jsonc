@@ -6,14 +6,16 @@
   // 结构本体来源：order-consumer/sql/shop-order.json（13 字段、date 无 format 变体，
   // 全文原样，层级/数值/字段顺序未改），本文件只追加注释与 _meta。
   //
-  // 接线现状（阶段二）：
-  //   - 文档结构在 internal/es/doc_order.go（OrderIndex，13 个 json tag 与本 properties 严格互等）；
+  // 接线现状（二期已打通全量灌数编排）：
+  //   - 文档结构在 internal/es/doc_order.go（OrderIndex，13 个 json tag 与本 properties 严格互等，
+  //     与 order-consumer/consumer/order_index.go 的 13 字段双向互等）；
   //   - 数据源 Provider / 差量补偿 / DB 计数口径在 internal/es/sync/order.go，已登记进
   //     registry_provider.go 的三张「别名 → 函数」表（键 shop-order）；
   //   - status=active 后本定义进入 ExecutableDefinitions()，es:migrate / es:status 按别名逐条处理。
-  //   - 边界：全量灌数编排（syncIndexTarget 的 checkpoint/对账/调优）仍是商品专属形态，
-  //     SyncByAlias("shop-order") 会如实报「尚未接入全量灌数编排」；订单全量由 order-consumer
-  //     增量链路维护，本仓库的灌数证据落在 NewProvider 命中 + 通用 Run 直连（见 order_test.go）。
+  //   - 全量灌数编排已对订单可用（任务 #42）：sync/order.go 的 orderProvider 实现了 ingestTarget，
+  //     SyncByAlias("shop-order") 走通 syncIndexTarget 的 checkpoint / 对账 / 灌入调优 / dry-run，
+  //     es:migrate 首建、es:rebuild 蓝绿、es:cutover 割接三条编排都吃本索引；割接与迁移在发出任何
+  //     ES 写请求之前先用 IngestOrchestrationReady 预检该别名编排可用，不可用即零写拒绝。
   //
   // 与 shop-product（indices/product.jsonc）的关键差异 —— 两套索引不能复用同一份配置假设：
   //   | 项              | shop-product        | shop-order            |
@@ -199,7 +201,8 @@
       // 与本仓库写入器自洽：
       //   internal/es/doc_order.go        —— pay_time/create_time/update_time 是 time.Time，
       //                                      由 stdlib 默认序列化（RFC3339Nano），无 MarshalJSON；
-      //   order-consumer/consumer/order_consumer.go:55 —— 同样直接 marshal time.Time，无格式化。
+      //   order-consumer/consumer/order_index.go —— 三个 date 字段同样是 time.Time，bulk 请求
+      //                                      直接 Doc(orderIndex) 序列化，无格式化。
       // 若改回 "yyyy-MM-dd HH:mm:ss"，本仓库与 order-consumer 的每一条写入都会 date_parse_exception
       // （strict 下逐条失败，不是告警），且需重灌历史数据。故此处与上游 shop-order.json（无 format
       // 变体）逐字对齐，definition_test.go 的 TestDefinitionMatchesUpstreamSource 用该文件比指纹。

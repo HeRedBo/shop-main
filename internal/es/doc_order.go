@@ -2,13 +2,15 @@ package es
 
 // 本文件是写入 shop-order 索引的文档结构与「DB 行 -> ES 文档」装配入口，
 // 属于跨仓库协议的一部分，与下面两处保持逐字段一致：
-//   - order-consumer/consumer/order_index.go 的 OrderIndex（增量写入方，12 字段）；
+//   - order-consumer/consumer/order_index.go 的 OrderIndex（增量写入方，同为 13 字段）；
 //   - shop-search-api/internal/service/order_service 读取侧对同名字段的依赖。
 //
-// 本仓库的 OrderIndex 是外部 12 字段的 **超集**：额外补一个 pay_type_name —— 它是
-// orders.jsonc mappings 声明的第 13 个字段（dynamic: strict 要求文档 key 集合与之严格
-// 互等），而 order-consumer 的 OrderIndex 没有该字段、由本仓库灌数时用 PayTypeName 现算。
-// 除 pay_type_name 外，其余 12 字段的字段名/类型/json tag/顺序均与 order_index.go 逐字对齐。
+// 两侧 OrderIndex 是 **13 字段双向互等**（任务 #45 之后 order-consumer 已补写 pay_type_name，
+// 与本仓库同表现算，不再有「超集 / 缺字段」的差异）：字段名/类型/json tag/顺序逐字对齐，
+// pay_type_name 是 orders.jsonc mappings 声明的第 13 个字段（dynamic: strict 要求文档 key
+// 集合与之严格互等）。
+// **任一侧改字段必须同步另一侧**：index 是整篇覆盖写，少带一个字段就等于把全量灌数灌进去的
+// 值抹掉；多带一个字段会被 strict 映射逐条拒写（strict_dynamic_mapping_exception，整批失败）。
 //
 // 三条禁止项（dynamic: strict + ES 默认 date format 的直接后果，与 doc.go 同源）：
 //  1. 不得添加 omitempty：names/product_ids 为空也必须是 []（非 null），状态/类型零值
@@ -37,7 +39,7 @@ import (
 const orderIDSuffixLen = 4
 
 // OrderIndex 是 shop-order 索引的单条文档，13 个字段与 orders.jsonc mappings.properties
-// 严格互等（比 order-consumer 的 12 字段多出 pay_type_name 一个）。
+// 严格互等，并与 order-consumer/consumer/order_index.go 的 OrderIndex 13 字段双向互等。
 type OrderIndex struct {
 	OrderId       string    `json:"order_id"`        // 字符串订单号，同时作为 ES _id（见 OrderDocID，注意不是数字主键 id）
 	OrderIdSuffix string    `json:"order_id_suffix"` // 订单号后 4 位，配合按尾号搜索；短于 4 位为空
@@ -46,7 +48,7 @@ type OrderIndex struct {
 	Uid           int64     `json:"uid"`             // 下单用户 id，同时是 routing 值（见 OrderRouting）
 	PayTime       time.Time `json:"pay_time"`        // 序列化为 RFC3339，禁止自定义格式
 	PayType       string    `json:"pay_type"`        // 支付方式原始值（weixin/yue/integral...）
-	PayTypeName   string    `json:"pay_type_name"`   // 支付方式中文名，本仓库灌数时现算（order-consumer 无此字段）
+	PayTypeName   string    `json:"pay_type_name"`   // 支付方式中文名，两侧同表现算（同一份 order_service.PayTypeName 口径）
 	RefundStatus  int       `json:"refund_status"`   // 0 未退款 / 1 申请中 / 2 已退款，mapping 为 keyword
 	ShippingType  int       `json:"shipping_type"`   // 配送方式，keyword
 	OrderStatus   int       `json:"order_status"`    // 派生聚合状态码，keyword（复用 order_service.OrderStatus）
@@ -67,12 +69,12 @@ type orderCartPayload struct {
 }
 
 // OrderDocID 返回写 ES 用的文档 _id：订单号字符串本身（不是数字主键 id）。
-// 必须与 order-consumer/consumer/order_consumer.go:55 的 BulkCreate(index, orderIndex.OrderId, ...)
-// 逐字一致，否则全量与增量写入落到不同文档。
+// 必须与 order-consumer/consumer/order_consumer.go 的 bulk 写入处
+// （NewBulkIndexRequest().Index(...).Id(orderIndex.OrderId)）逐字一致，否则全量与增量写入落到不同文档。
 func (d OrderIndex) OrderDocID() string { return d.OrderId }
 
 // OrderRouting 返回写 ES 用的 routing：strconv.FormatInt(uid, 10)。
-// 必须与 order_consumer.go:55 的 strutil.Int64ToString(uid)（其实现即 strconv.FormatInt）
+// 必须与 order_consumer.go bulk 写入处的 strutil.Int64ToString(uid)（其实现即 strconv.FormatInt）
 // 以及读侧 shop-search-api 的 routing 逐字一致，否则按 uid 查询路由到错误分片、命中不到。
 func (d OrderIndex) OrderRouting() string { return strconv.FormatInt(d.Uid, 10) }
 

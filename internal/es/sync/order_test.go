@@ -401,9 +401,9 @@ func TestCompensateOrder_ForwardsSinceAndBranches(t *testing.T) {
 	orderCompensateScan = func(_ context.Context, s time.Time, _ int, cb func([]models.StoreOrder) error) error {
 		gotSince = s
 		rows := []models.StoreOrder{
-			{OrderId: "OK001", Uid: 11},                       // 合格 -> index
-			{OrderId: "DEL002", Uid: 22},                      // 软删 -> delete
-			{OrderId: "", Uid: 33},                            // 空订单号 -> 跳过
+			{OrderId: "OK001", Uid: 11},  // 合格 -> index
+			{OrderId: "DEL002", Uid: 22}, // 软删 -> delete
+			{OrderId: "", Uid: 33},       // 空订单号 -> 跳过
 		}
 		rows[0].Id, rows[1].Id, rows[2].Id = 1, 2, 3
 		rows[1].IsDel = 1
