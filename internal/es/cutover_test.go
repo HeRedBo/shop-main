@@ -318,7 +318,7 @@ func (f *fakeCluster) Perform(ctx context.Context, method, path, body string) (s
 func silentLogf(string, ...any) {}
 
 func cutoverSync(summary SyncSummary, err error) SyncFunc {
-	return func(ctx context.Context, target string) (SyncSummary, error) {
+	return func(ctx context.Context, alias, target string) (SyncSummary, error) {
 		s := summary
 		s.Target = target
 		return s, err
@@ -326,11 +326,11 @@ func cutoverSync(summary SyncSummary, err error) SyncFunc {
 }
 
 func fixedCount(n int64) CountFunc {
-	return func(ctx context.Context) (int64, error) { return n, nil }
+	return func(ctx context.Context, alias string) (int64, error) { return n, nil }
 }
 
 // noopCompensate 是默认的差量补偿桩：不碰集群，只证明调用点被走到。
-func noopCompensate(context.Context, string, time.Time) (CompensateSummary, error) {
+func noopCompensate(context.Context, string, string, time.Time) (CompensateSummary, error) {
 	return CompensateSummary{}, nil
 }
 
@@ -807,7 +807,7 @@ func TestRunCutover_DryRunProvesZeroWrites(t *testing.T) {
 	opts.DryRun = true
 	opts.TuneIngest = true
 	compensated := false
-	opts.Compensate = func(context.Context, string, time.Time) (CompensateSummary, error) {
+	opts.Compensate = func(context.Context, string, string, time.Time) (CompensateSummary, error) {
 		compensated = true
 		return CompensateSummary{}, nil
 	}
@@ -1050,7 +1050,7 @@ func TestRunCutover_RestoreUsesDetachedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// 灌数完成的同一刻超时到：主 ctx 立即取消
-	opts.Sync = func(ctx context.Context, target string) (SyncSummary, error) {
+	opts.Sync = func(ctx context.Context, alias, target string) (SyncSummary, error) {
 		cancel()
 		return SyncSummary{Target: target, Sent: 100}, nil
 	}
@@ -1253,7 +1253,7 @@ func TestRunCutover_TimeoutPropagatesToSync(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	opts.Sync = func(ctx context.Context, target string) (SyncSummary, error) {
+	opts.Sync = func(ctx context.Context, alias, target string) (SyncSummary, error) {
 		select {
 		case <-ctx.Done():
 			return SyncSummary{Target: target}, ctx.Err()
@@ -1296,11 +1296,11 @@ func TestRunCutover_CompensateRunsAfterRemoveIndexWithStartedAtLowerBound(t *tes
 		nowAtComp     time.Time
 		syncStartedAt time.Time
 	)
-	opts.Sync = func(ctx context.Context, target string) (SyncSummary, error) {
+	opts.Sync = func(ctx context.Context, alias, target string) (SyncSummary, error) {
 		syncStartedAt = time.Now()
 		return SyncSummary{Target: target, Scanned: 100, Sent: 100}, nil
 	}
-	opts.Compensate = func(_ context.Context, target string, since time.Time) (CompensateSummary, error) {
+	opts.Compensate = func(_ context.Context, alias, target string, since time.Time) (CompensateSummary, error) {
 		ran = true
 		targetAtComp, sinceAtComp, nowAtComp = target, since, time.Now()
 		aliasAtComp, oldGoneAtComp = f.snapshotAlias("shop-product")
@@ -1370,7 +1370,7 @@ func TestRunCutover_CompensateFailureIsNotSwallowedAsSuccess(t *testing.T) {
 		f := newFakeCluster()
 		opts := baseCutoverOpts(f, def)
 		f.counts["shop-product_v1"] = 100
-		opts.Compensate = func(context.Context, string, time.Time) (CompensateSummary, error) {
+		opts.Compensate = func(context.Context, string, string, time.Time) (CompensateSummary, error) {
 			return CompensateSummary{Scanned: 3, Indexed: 1}, errors.New("bulk boom")
 		}
 
@@ -1391,7 +1391,7 @@ func TestRunCutover_CompensateFailureIsNotSwallowedAsSuccess(t *testing.T) {
 		f := newFakeCluster()
 		opts := baseCutoverOpts(f, def)
 		f.counts["shop-product_v1"] = 100
-		opts.Compensate = func(context.Context, string, time.Time) (CompensateSummary, error) {
+		opts.Compensate = func(context.Context, string, string, time.Time) (CompensateSummary, error) {
 			return CompensateSummary{Scanned: 5, Indexed: 2, Failed: 3}, nil
 		}
 
@@ -1440,7 +1440,7 @@ func TestRunCutover_NegativeToleranceAbortsAndForceIsReachable(t *testing.T) {
 	optsB.Force = true
 	fB.counts["shop-product_v1"] = 100
 	compensated := false
-	optsB.Compensate = func(context.Context, string, time.Time) (CompensateSummary, error) {
+	optsB.Compensate = func(context.Context, string, string, time.Time) (CompensateSummary, error) {
 		compensated = true
 		return CompensateSummary{}, nil
 	}

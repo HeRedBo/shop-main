@@ -93,14 +93,16 @@ func runESSyncProducts(cmd *cobra.Command) error {
 	}
 
 	// 进度条：独立 goroutine 拉原子快照渲染，渲染失败绝不中止同步。
-	// 统计容器提前创建，同时交给 SyncProducts（进度条与同步共享同一份快照）。
+	// 统计容器提前创建，同时交给灌数入口（进度条与同步共享同一份快照）。
+	// 非 TTY（管道 / 重定向 / CI）下不构造渲染器：progressbar v3.19.1 不会自己降级。
 	stats := &sync.SyncStats{}
-	prog := sync.NewProgress(stats, "ES 全量同步", 0)
-	prog.Start()
-	defer prog.Shutdown()
+	stopProg := startIngestProgress(stats, "ES 全量同步", false)
+	defer stopProg()
 
 	opts.Stats = stats
-	_, runErr := sync.SyncProducts(ctx, opts.ToSync())
+	// 命令名即业务域：es:sync-products 只服务商品别名，按别名查表取数据源；
+	// --index 解析到别的别名（如二期转 active 的订单）时会被当场拒绝，不会再静默灌商品数据。
+	_, runErr := sync.SyncByAlias(ctx, sync.ProductAlias, opts.ToSync())
 
 	if runErr != nil {
 		return runErr

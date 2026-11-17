@@ -88,7 +88,7 @@ func migrateOpts(reg *Registry, f RebuildTarget, dryRun bool) MigrateOptions {
 		Registry: reg,
 		Target:   f,
 		Sync:     cutoverSync(SyncSummary{Scanned: 5, Sent: 5}, nil),
-		Compensate: func(context.Context, string, time.Time) (CompensateSummary, error) {
+		Compensate: func(context.Context, string, string, time.Time) (CompensateSummary, error) {
 			return CompensateSummary{}, nil
 		},
 		DBCount:   fixedCount(5),

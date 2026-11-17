@@ -107,9 +107,9 @@ func TestResolveProductDef_StrictRejectsUnknownAndDraft(t *testing.T) {
 	})
 
 	t.Run("strict=false 保留原有友好兜底", func(t *testing.T) {
-		// 判别力反向证明：同一个 draft/未知目标，宽松模式仍走兜底（不因新字段而误伤既有编程式调用）。
+		// 判别力反向证明：同一个未知目标，宽松模式仍回落「按商品别名精确命中」（#37 已删「唯一可执行」兜底）。
 		if _, err := resolveProductDef(reg, "zz_test_idx", false); err != nil {
-			t.Errorf("strict=false 必须保留兜底（回落 ProductAlias/唯一可执行），got=%v", err)
+			t.Errorf("strict=false 必须保留按别名回落 ProductAlias，got=%v", err)
 		}
 	})
 }

@@ -174,7 +174,7 @@ func runESMigrate(cmd *cobra.Command) error {
 		Target:           es.NewAdminRebuild(),
 		Sync:             newMigrateSyncFunc(spec),
 		Compensate:       newMigrateCompensateFunc(spec),
-		DBCount:          es.ProductDocCount,
+		DBCount:          sync.DBCountByAlias,
 		Alias:            spec.Alias,
 		Tolerance:        spec.Tolerance,
 		DryRun:           spec.DryRun,
@@ -202,6 +202,8 @@ func runESMigrate(cmd *cobra.Command) error {
 
 // newMigrateSyncFunc / newMigrateCompensateFunc 与 es_rebuild.go 的同名适配器同构：
 // 把 sync 包的两个入口收敛成 es 的窄接口。rebuild 与 migrate 各自独立装配，避免互相牵扯。
+// 二者都按编排传下来的 alias 查表取实现（sync.SyncByAlias / sync.CompensateByAlias /
+// sync.DBCountByAlias），不再恒调商品入口 —— --alias all 逐条循环时每条都落到自己业务的数据源与口径。
 //
 // Tolerance 固定用 es.IngestToleranceIgnore，**绝不把 --tolerance 下发给内层灌数**（与
 // es_rebuild.go / es_cutover.go 同一口径）：内层只负责灌，它的收尾对账一旦按同一个容差判定，
@@ -210,11 +212,15 @@ func runESMigrate(cmd *cobra.Command) error {
 // （ReconcileCounts），首建分支在 internal/es/migrate.go 用真实 opts.Tolerance 直接判定；
 // --tolerance 的用户可见语义（达标/不达标、负值=永不可达标）只在 ReconcileCounts 单点拥有，本层不改写。
 func newMigrateSyncFunc(spec migrateSpec) es.SyncFunc {
-	return func(ctx context.Context, target string) (es.SyncSummary, error) {
+	return func(ctx context.Context, alias, target string) (es.SyncSummary, error) {
 		stats := &sync.SyncStats{}
 		opts := migrateIngestOptions(spec, target)
 		opts.Stats = stats
-		_, err := sync.SyncProducts(ctx, opts)
+		// 灌数进度条：migrate 是多阶段编排，标题必须带上正在处理的别名并点明「这是灌数」，
+		// 否则会被误读成整个 migrate 的进度。非 TTY / --json 下不构造渲染器。
+		stopProg := startIngestProgress(stats, fmt.Sprintf("ES 灌数(%s)", alias), spec.AsJSON)
+		defer stopProg()
+		_, err := sync.SyncByAlias(ctx, alias, opts)
 		return es.SyncSummary{
 			Target:  target,
 			Scanned: stats.ScannedDocs.Load(),
@@ -226,7 +232,7 @@ func newMigrateSyncFunc(spec migrateSpec) es.SyncFunc {
 	}
 }
 
-// migrateIngestOptions 构造下发给内层灌数（sync.SyncProducts）的 Options。
+// migrateIngestOptions 构造下发给内层灌数（sync.SyncByAlias）的 Options。
 // 单独提成纯函数，是为了让「容差固定为哨兵 IngestToleranceIgnore、绝不透传 spec.Tolerance」
 // 这一关键装配可被单测直接钉住（见 cmd/cli/es_migrate_test.go 的破坏即红用例）。
 // 其余字段与提取前逐字一致：TuneIngest=false（settings 生命周期归 rebuild 编排独占）、
@@ -249,8 +255,8 @@ func migrateIngestOptions(spec migrateSpec, target string) sync.Options {
 }
 
 func newMigrateCompensateFunc(spec migrateSpec) es.CompensateFunc {
-	return func(ctx context.Context, target string, since time.Time) (es.CompensateSummary, error) {
-		st, err := sync.Compensate(ctx, target, since, sync.CompensateOptions{
+	return func(ctx context.Context, alias, target string, since time.Time) (es.CompensateSummary, error) {
+		st, err := sync.CompensateByAlias(ctx, alias, target, since, sync.CompensateOptions{
 			ChunkSize: spec.ChunkSize,
 			BulkSize:  spec.BulkSize,
 		})

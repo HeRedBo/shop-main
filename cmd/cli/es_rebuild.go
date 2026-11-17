@@ -193,7 +193,7 @@ func runESRebuild(cmd *cobra.Command) error {
 		Target:           es.NewAdminRebuild(),
 		Sync:             newRebuildSyncFunc(spec),
 		Compensate:       newRebuildCompensateFunc(spec),
-		DBCount:          es.ProductDocCount,
+		DBCount:          sync.DBCountByAlias,
 		Tolerance:        spec.Tolerance,
 		DryRun:           spec.DryRun,
 		DropOld:          spec.DropOld,
@@ -224,7 +224,7 @@ func runESRebuild(cmd *cobra.Command) error {
 	return runErr
 }
 
-// newRebuildSyncFunc 把 sync.SyncProducts 适配成 es.SyncFunc（灌数注入点）。
+// newRebuildSyncFunc 把按别名查表后的灌数入口（sync.SyncByAlias）适配成 es.SyncFunc（灌数注入点）。
 //
 // TuneIngest=false：refresh/replicas 的生命周期由 rebuild 编排独占（提速 + 无论成败都恢复），
 // 嵌套再开会在灌数结束时提前恢复，白丢提速窗口；Timeout=0：统一由外层 --timeout 的 ctx 控制。
@@ -233,9 +233,13 @@ func runESRebuild(cmd *cobra.Command) error {
 // 它的收尾对账一旦按同一个容差判定，就会抢在 rebuild 第 5 步之前失败 —— 中止步骤错报成 sync、
 // 结论行的 ES 计数是从未回读的假 0、--force 分支不可达（真机实测坐实的缺陷）。
 func newRebuildSyncFunc(spec rebuildSpec) es.SyncFunc {
-	return func(ctx context.Context, target string) (es.SyncSummary, error) {
+	return func(ctx context.Context, alias, target string) (es.SyncSummary, error) {
 		stats := &sync.SyncStats{}
-		_, err := sync.SyncProducts(ctx, sync.Options{
+		// 灌数进度条：标题带正在重建的别名 + 「灌数」阶段名（rebuild 是 8 步编排，不能让八步共用一条进度条）；
+		// 非 TTY / --json 下不构造渲染器。
+		stopProg := startIngestProgress(stats, fmt.Sprintf("ES 灌数(%s)", alias), spec.AsJSON)
+		defer stopProg()
+		_, err := sync.SyncByAlias(ctx, alias, sync.Options{
 			Index:       target,
 			ChunkSize:   spec.ChunkSize,
 			Concurrency: spec.Concurrency,
@@ -261,14 +265,14 @@ func newRebuildSyncFunc(spec rebuildSpec) es.SyncFunc {
 	}
 }
 
-// newRebuildCompensateFunc 把 sync.Compensate 适配成 es.CompensateFunc（差量补偿注入点）。
+// newRebuildCompensateFunc 把 sync.CompensateByAlias 适配成 es.CompensateFunc（差量补偿注入点）。
 // since 由 rebuild 编排固化为「任务首次启动时刻」，透传给扫描下界，绝不在这里重新取 time.Now()。
 //
 // Stats 必须原样带出：sync.Compensate 里的 Failed 含 strict_dynamic 这类结构级失败，
 // 早先只取 error 把它们整条丢掉了，失败 bulk 仍被报成 Compensated=true（审查必修②）。
 func newRebuildCompensateFunc(spec rebuildSpec) es.CompensateFunc {
-	return func(ctx context.Context, target string, since time.Time) (es.CompensateSummary, error) {
-		st, err := sync.Compensate(ctx, target, since, sync.CompensateOptions{
+	return func(ctx context.Context, alias, target string, since time.Time) (es.CompensateSummary, error) {
+		st, err := sync.CompensateByAlias(ctx, alias, target, since, sync.CompensateOptions{
 			ChunkSize: spec.ChunkSize,
 			BulkSize:  spec.BulkSize,
 		})

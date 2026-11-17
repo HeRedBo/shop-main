@@ -19,6 +19,7 @@ import (
 
 	"shop/internal/es"
 	"shop/internal/es/admin"
+	"shop/internal/es/sync"
 	"shop/pkg/global"
 
 	"github.com/spf13/cobra"
@@ -146,14 +147,11 @@ type esIndexDetail struct {
 	Errors              []string `json:"errors,omitempty"`
 }
 
-// esStatusDBCounters 登记「别名 → DB 期望数」的口径实现。
-//
-// 只有登记过的别名才做 ES/DB 计数比对；拿不到口径时如实报 count_comparable=false，
-// 绝不拿商品口径去套别的索引（口径错配比对「没比」更有害）。
-// 新增索引时在这里补一条即可，割接/状态两层都不需要改。
-var esStatusDBCounters = map[string]es.CountFunc{
-	"shop-product": es.ProductDocCount,
-}
+// 口径表不在本文件自存一份：“别名 → DB 期望数”唯一事实源是 sync 包的 dbCounters
+// （internal/es/sync/registry_provider.go），migrate/rebuild/cutover 的对账与本命令的
+// ES/DB 计数比对共用同一张表。只有登记过的口径才参与比对；拿不到时如实报
+// count_comparable=false，绝不拿商品口径去套别的索引（口径错比对「没比」更有害）。
+// 新增索引时只需在那张表里补一条，status 层不需跟着改。
 
 func init() {
 	f := esStatusCmd.Flags()
@@ -365,7 +363,7 @@ func buildAliasStatus(ctx context.Context, cluster es.Cluster, def *es.IndexDefi
 	}
 
 	// ES 与 DB 计数比对：只对登记过口径的别名做。
-	counter, comparable := esStatusDBCounters[alias]
+	counter, comparable := sync.DBCounterFor(alias)
 	st.CountComparable = comparable
 	if !comparable {
 		st.CountScope = "该别名未登记 DB 计数口径，跳过 ES/DB 比对"

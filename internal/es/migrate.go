@@ -90,7 +90,7 @@ func RunMigrate(ctx context.Context, opts MigrateOptions) (*MigrateResult, error
 		return nil, fmt.Errorf("es: migrate 需要 Registry")
 	}
 	if opts.DBCount == nil {
-		opts.DBCount = ProductDocCount
+		opts.DBCount = productCountFunc
 	}
 	target := opts.Target
 	if target == nil {
@@ -317,7 +317,7 @@ func delegateRebuild(ctx context.Context, def *IndexDefinition, cur string, c Re
 func migrateFirstCreate(ctx context.Context, def *IndexDefinition, c RebuildTarget, opts MigrateOptions, logf func(string, ...any), rec *DefMigrateResult) *DefMigrateResult {
 	alias := def.Alias()
 	next := def.Name()
-	dbExpected, err := opts.DBCount(ctx)
+	dbExpected, err := opts.DBCount(ctx, alias)
 	if err != nil {
 		rec.Verdict = string(VerdictError)
 		rec.Error = fmt.Sprintf("统计商品期望数失败: %v", err)
@@ -357,7 +357,7 @@ func migrateFirstCreate(ctx context.Context, def *IndexDefinition, c RebuildTarg
 		rec.Error = fmt.Sprintf("已首建 %s（未挂别名）但未注入灌数回调（SyncFunc 为 nil）：别名 %s 未指向它，线上读不受影响", next, alias)
 		return rec
 	}
-	summary, err := opts.Sync(ctx, next)
+	summary, err := opts.Sync(ctx, alias, next)
 	if err != nil {
 		rec.Verdict = string(VerdictError)
 		rec.Error = fmt.Sprintf("首建后灌数失败 [target=%s]（未挂别名，线上读不受影响）: %v", next, err)

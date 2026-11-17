@@ -241,11 +241,23 @@ func productIDs(rows []models.StoreProduct) []int64 {
 // SyncProducts 是products全量同步的编程式入口，供 es:sync-products CLI 以及
 // Phase 5 rebuild（灌 next 物理索引）、Phase 6 cutover（复用全量灌 v1）直接调用。
 //
-// 它负责 provider 之外的“编排”：定位 Definition、解析目标、resume 续传、dry-run 预演、
-// retry-failed 复跑、灌入调优（临时关 refresh/副本）、对账收敛。并发流水线本身委托 Run。
+// 它是 syncIndexTarget 的兼容别名（不施加别名约束）：目标定义仍由 opts.Index 解析，
+// 数据源仍按解析出的 def.Alias() 查表构造。migrate/rebuild/cutover 等按别名循环的
+// 编排请改用 SyncByAlias，以便「解析结果与调用方声明的别名不一致」时当场拒绝。
+func SyncProducts(ctx context.Context, opts Options) (*SyncStats, error) {
+	return syncIndexTarget(ctx, "", opts)
+}
+
+// syncIndexTarget 是全量灌数的真正实现：它负责 provider 之外的“编排”——定位 Definition、
+// 解析目标、resume 续传、dry-run 预演、retry-failed 复跑、灌入调优（临时关 refresh/副本）、
+// 对账收敛。并发流水线本身委托 Run。
+//
+// alias 非空时是调用方对「本次在处理哪个别名」的自证：解析出的声明必须正好属于该别名，否则在任何
+// bulk/MySQL 触达之前报错。数据源 Provider 一律经 registry_provider.go 的注册表按别名
+// 构造，不再写死 newProductProvider（那正是「恒跑商品逻辑」的根因）。
 //
 // 返回 error 时调用方应视为失败（非零退出）；此时别名不切换，checkpoint 保留以便 --resume。
-func SyncProducts(ctx context.Context, opts Options) (*SyncStats, error) {
+func syncIndexTarget(ctx context.Context, alias string, opts Options) (*SyncStats, error) {
 	reg, err := es.LoadRegistry(opts.IndicesDir)
 	if err != nil {
 		return nil, err
@@ -260,9 +272,24 @@ func SyncProducts(ctx context.Context, opts Options) (*SyncStats, error) {
 		target = def.Alias()
 	}
 
+	// 按别名分发的前置守卫：调用方声称在处理 alias，解析结果却不是它 → 立即中止。
+	// 不拦住就会拿一个业务的数据源往另一个业务的索引里灌（一期已验证过的缺陷形态）。
+	if alias != "" && def.Alias() != alias {
+		return nil, fmt.Errorf("sync: 目标 %q 解析到别名 %s，与调用方声明的别名 %s 不一致，拒绝灌数（防止跨业务串数据）", target, def.Alias(), alias)
+	}
+
 	runOpts := opts
 	runOpts.Index = target
-	pp := newProductProvider(global.Db, def, runOpts)
+	// 数据源由「别名 → Provider」注册表构造；本层编排（checkpoint / 对账 / 调优）目前只
+	// 支持商品 provider 形态，别的形态必须显式报错，绝不能悄悄按商品跑。
+	p, err := NewProvider(def.Alias(), global.Db, def, runOpts)
+	if err != nil {
+		return nil, err
+	}
+	pp, ok := p.(*productProvider)
+	if !ok {
+		return nil, fmt.Errorf("sync: 别名 %s 的数据源 %T 尚未接入全量灌数编排（checkpoint/对账/调优仅支持商品 provider 形态）", def.Alias(), p)
+	}
 
 	// retry-failed：跳过区间扫描，直接复跑失败明细（runtime 才连 ES）。
 	if strings.TrimSpace(opts.RetryFailed) != "" {
@@ -850,8 +877,10 @@ func bytesToMB(b int) int {
 
 // resolveProductDef 从 Registry 定位产品索引声明。
 //
-// strict=false（编程式默认）：优先按 target（别名或物理名）匹配，回落 ProductAlias，
-// 再回落唯一可执行定义——保留原有友好兜底，rebuild/cutover/migrate 适配器与单测行为不变。
+// strict=false（编程式默认）：优先按 target（别名或物理名）匹配，回落 ProductAlias——
+// 回落必须是「按别名精确命中」，rebuild/cutover/migrate 适配器与单测行为不变。
+// 旧版在此额外有一条「ExecutableDefinitions() 只有一条就取它」的兼容兜底：订单转 active 后
+// len 变 2 会静默失效（同一个调用在两种登记状态下解析到不同定义），已删除；命不中就报错。
 //
 // strict=true（CLI 显式传 --index）：非空 target 必须命中「已登记且 active」的定义，否则
 // 立即报错并列出当前可用（active）名称。这是缺陷的正面防线：旧兜底会把 --index=shop-order
@@ -887,9 +916,6 @@ func resolveProductDef(reg *es.Registry, target string, strict bool) (*es.IndexD
 	}
 	if d, ok := reg.Get(ProductAlias); ok {
 		return d, nil
-	}
-	if exec := reg.ExecutableDefinitions(); len(exec) == 1 {
-		return exec[0], nil
 	}
 	return nil, fmt.Errorf("sync: 无法定位产品索引声明（target=%q，已注册别名=%v）；请检查 --index 或 indices-dir", target, reg.Aliases())
 }

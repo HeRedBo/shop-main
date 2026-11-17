@@ -57,12 +57,13 @@ type CompensateSummary struct {
 //
 // since 语义（最关键）：必须是本次重建任务**首次启动时刻**，早于它的变更已被全量灌入覆盖，
 // 晚于它的（灌数窗口内的改/删）必须靠这次补偿收敛。取错下界会静默漏数据。
+// alias 是本次重建的别名，补偿实现据此从「别名 → 补偿器」注册表取对应实现（与 SyncFunc 同一口径）。
 // target 是切换后的新物理索引名（此刻别名也已指向它，二者等价，显式用物理名更直观）。
 //
 // 返回值必须同时给出统计与 error：error 只表达「补偿没跑完」（ctx 取消/扫描失败），
 // Stats.Failed 表达「跑完了但有文档没写进去」，两类缺陷语义不同，合并成一个 error
 // 就会把结构类失败吞成成功。
-type CompensateFunc func(ctx context.Context, target string, since time.Time) (CompensateSummary, error)
+type CompensateFunc func(ctx context.Context, alias, target string, since time.Time) (CompensateSummary, error)
 
 // RebuildOps 是 rebuild 相较 Cluster 额外需要的两个原语，都带删/留语义区分：
 //   - SwitchAliasKeepOld：单次 POST /_aliases，add next + remove cur（仅解除别名，保留 cur）；
@@ -259,7 +260,7 @@ type RebuildOptions struct {
 	Target     RebuildTarget // nil → NewAdminRebuild()
 	Sync       SyncFunc      // 灌数（复用 cutover.go 定义的窄接口）
 	Compensate CompensateFunc
-	DBCount    CountFunc // nil → ProductDocCount
+	DBCount    CountFunc // nil → productCountFunc（仅商品口径回落）
 
 	Tolerance        int64
 	DryRun           bool
@@ -338,7 +339,7 @@ func RunRebuild(ctx context.Context, opts RebuildOptions) (*RebuildResult, error
 		logf = func(format string, v ...any) { fmt.Printf(format+"\n", v...) }
 	}
 	if opts.DBCount == nil {
-		opts.DBCount = ProductDocCount
+		opts.DBCount = productCountFunc
 	}
 	target := opts.Target
 	if target == nil {
@@ -411,7 +412,7 @@ func RunRebuild(ctx context.Context, opts RebuildOptions) (*RebuildResult, error
 		return res, fmt.Errorf("es: 目标索引 %s 已存在（上次重建残留），拒绝覆盖；请先 es:cleanup 删除该残留再重跑", next)
 	}
 
-	dbExpected, err := opts.DBCount(ctx)
+	dbExpected, err := opts.DBCount(ctx, alias)
 	if err != nil {
 		res.AbortedStep = "precheck_db_count"
 		return res, err
@@ -501,7 +502,7 @@ func RunRebuild(ctx context.Context, opts RebuildOptions) (*RebuildResult, error
 		return failKeepNext("sync", fmt.Errorf("es: 未注入灌数回调（SyncFunc 为 nil）"))
 	}
 	logf("[4/8] 灌入 %s（从 MySQL 全量，op_type=index 幂等）", next)
-	summary, err := opts.Sync(ctx, next)
+	summary, err := opts.Sync(ctx, alias, next)
 	res.Sync = summary
 	if err != nil {
 		return failKeepNext("sync", fmt.Errorf("es: 灌数失败 [target=%s]: %w", next, err))
@@ -555,7 +556,7 @@ func RunRebuild(ctx context.Context, opts RebuildOptions) (*RebuildResult, error
 			next, startedAt.Format(time.RFC3339))
 	}
 	logf("[7/8] 差量补偿：扫描 update_time >= %s（Unscoped，含删分支），目标 %s", startedAt.Format(time.RFC3339), next)
-	cstats, cerr := opts.Compensate(ctx, next, startedAt)
+	cstats, cerr := opts.Compensate(ctx, alias, next, startedAt)
 	res.Compensate = cstats
 	if cerr != nil {
 		// 补偿失败不回滚切换（线上已读新索引），只报错交人工重跑补偿（幂等）。

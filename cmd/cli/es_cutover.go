@@ -199,7 +199,7 @@ func runESCutover(cmd *cobra.Command) error {
 		Cluster:         es.NewAdminCluster(),
 		Sync:            newCutoverSyncFunc(spec),
 		Compensate:      newCutoverCompensateFunc(spec),
-		DBCount:         es.ProductDocCount,
+		DBCount:         sync.DBCountByAlias,
 		Tolerance:       spec.Tolerance,
 		Force:           spec.Force,
 		DryRun:          spec.DryRun,
@@ -249,8 +249,8 @@ func cutoverStdinIsInteractive() bool {
 	return true
 }
 
-// newCutoverSyncFunc 把 sync.SyncProducts 适配成 es.SyncFunc —— 全项目唯一一处
-// 割接层与 #5 流水线之间的耦合点。
+// newCutoverSyncFunc 把按别名查表的灌数入口（sync.SyncByAlias）适配成 es.SyncFunc ——
+// 全项目唯一一处割接层与 #5 流水线之间的耦合点（一期只有 shop-product 一条表项）。
 //
 // 三个刻意设置：
 //   - TuneIngest=false：settings 的生命周期由割接编排独占（提速 + 无论成败都要恢复），
@@ -261,9 +261,9 @@ func cutoverStdinIsInteractive() bool {
 //     对账判定归割接编排第 4 步，下发下去会让 sync 抢在自己收尾对账里失败，中止步骤错报成
 //     sync，而 --force 分支根本不可达（与 es:rebuild 同一结论，真机实测坐实过）。
 func newCutoverSyncFunc(spec cutoverSpec) es.SyncFunc {
-	return func(ctx context.Context, target string) (es.SyncSummary, error) {
+	return func(ctx context.Context, alias, target string) (es.SyncSummary, error) {
 		stats := &sync.SyncStats{}
-		_, err := sync.SyncProducts(ctx, sync.Options{
+		_, err := sync.SyncByAlias(ctx, alias, sync.Options{
 			Index:       target,
 			ChunkSize:   spec.ChunkSize,
 			Concurrency: spec.Concurrency,
@@ -290,12 +290,12 @@ func newCutoverSyncFunc(spec cutoverSpec) es.SyncFunc {
 	}
 }
 
-// newCutoverCompensateFunc 把 sync.Compensate 适配成 es.CompensateFunc（割接后的差量补偿注入点）。
+// newCutoverCompensateFunc 把 sync.CompensateByAlias 适配成 es.CompensateFunc（割接后的差量补偿注入点）。
 // since 由 RunCutover 固化为编排起点（与 rebuild 同一语义），这里绝不重新取 time.Now()；
 // Stats 必须原样带出，否则 bulk 里的 item 级失败（含 strict_dynamic）会被吞成成功。
 func newCutoverCompensateFunc(spec cutoverSpec) es.CompensateFunc {
-	return func(ctx context.Context, target string, since time.Time) (es.CompensateSummary, error) {
-		st, err := sync.Compensate(ctx, target, since, sync.CompensateOptions{
+	return func(ctx context.Context, alias, target string, since time.Time) (es.CompensateSummary, error) {
+		st, err := sync.CompensateByAlias(ctx, alias, target, since, sync.CompensateOptions{
 			ChunkSize: spec.ChunkSize,
 			BulkSize:  spec.BulkSize,
 		})

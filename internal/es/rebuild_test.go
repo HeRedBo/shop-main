@@ -202,7 +202,7 @@ func TestRunRebuild_ReconcileGatePrecedesAliasSwitch(t *testing.T) {
 		Definition: def,
 		Target:     f,
 		Sync:       cutoverSync(SyncSummary{Scanned: 999, Sent: 999}, nil),
-		Compensate: func(context.Context, string, time.Time) (CompensateSummary, error) {
+		Compensate: func(context.Context, string, string, time.Time) (CompensateSummary, error) {
 			compensated = true
 			return CompensateSummary{}, nil
 		},
@@ -326,7 +326,7 @@ func TestRunRebuild_CompensateRunsAfterSwitchWithStartedAtLowerBound(t *testing.
 		Definition: def,
 		Target:     f,
 		Sync:       cutoverSync(SyncSummary{Scanned: 5, Sent: 5}, nil),
-		Compensate: func(_ context.Context, target string, since time.Time) (CompensateSummary, error) {
+		Compensate: func(_ context.Context, alias, target string, since time.Time) (CompensateSummary, error) {
 			ran = true
 			aliasAtComp, targetAtComp, sinceAtComp = f.aliasIndexOf(alias), target, since
 			nowAtComp = time.Now()
@@ -438,11 +438,11 @@ func TestRunRebuild_DryRunRejectsEveryWrite(t *testing.T) {
 		Alias:      alias,
 		Definition: def,
 		Target:     f,
-		Sync: func(context.Context, string) (SyncSummary, error) {
+		Sync: func(context.Context, string, string) (SyncSummary, error) {
 			synced = true
 			return SyncSummary{}, nil
 		},
-		Compensate: func(context.Context, string, time.Time) (CompensateSummary, error) {
+		Compensate: func(context.Context, string, string, time.Time) (CompensateSummary, error) {
 			compensated = true
 			return CompensateSummary{}, nil
 		},
@@ -504,11 +504,13 @@ func TestRunRebuild_ToleranceGateIsOwnedByRebuildNotIngest(t *testing.T) {
 		Alias:      alias,
 		Definition: defA,
 		Target:     fA,
-		Sync: func(context.Context, string) (SyncSummary, error) {
+		Sync: func(context.Context, string, string) (SyncSummary, error) {
 			ingestRan = true
 			return SyncSummary{Scanned: 5, Sent: 5}, nil
 		},
-		Compensate:       func(context.Context, string, time.Time) (CompensateSummary, error) { return CompensateSummary{}, nil },
+		Compensate: func(context.Context, string, string, time.Time) (CompensateSummary, error) {
+			return CompensateSummary{}, nil
+		},
 		DBCount:          fixedCount(5),
 		Tolerance:        -1,
 		KeepNewOnFailure: true,
@@ -550,11 +552,13 @@ func TestRunRebuild_ToleranceGateIsOwnedByRebuildNotIngest(t *testing.T) {
 		Definition: defB,
 		Target:     fB,
 		Sync:       cutoverSync(SyncSummary{Scanned: 5, Sent: 5}, nil),
-		Compensate: func(context.Context, string, time.Time) (CompensateSummary, error) { return CompensateSummary{}, nil },
-		DBCount:    fixedCount(5),
-		Tolerance:  -1,
-		Force:      true,
-		Logf:       silentLogf,
+		Compensate: func(context.Context, string, string, time.Time) (CompensateSummary, error) {
+			return CompensateSummary{}, nil
+		},
+		DBCount:   fixedCount(5),
+		Tolerance: -1,
+		Force:     true,
+		Logf:      silentLogf,
 	})
 	if err != nil {
 		t.Fatalf("--force 必须能越过不达标继续切换（缺陷版本里该分支不可达）: %v", err)
@@ -591,7 +595,7 @@ func TestRunRebuild_CompensateFailuresAreNotSwallowedAsSuccess(t *testing.T) {
 			Definition: def,
 			Target:     f,
 			Sync:       cutoverSync(SyncSummary{Scanned: 5, Sent: 5}, nil),
-			Compensate: func(context.Context, string, time.Time) (CompensateSummary, error) {
+			Compensate: func(context.Context, string, string, time.Time) (CompensateSummary, error) {
 				return CompensateSummary{Scanned: 3, Indexed: 1, Deleted: 1}, errors.New("bulk boom")
 			},
 			DBCount:   fixedCount(5),
@@ -623,7 +627,7 @@ func TestRunRebuild_CompensateFailuresAreNotSwallowedAsSuccess(t *testing.T) {
 			Definition: def,
 			Target:     f,
 			Sync:       cutoverSync(SyncSummary{Scanned: 5, Sent: 5}, nil),
-			Compensate: func(context.Context, string, time.Time) (CompensateSummary, error) {
+			Compensate: func(context.Context, string, string, time.Time) (CompensateSummary, error) {
 				return CompensateSummary{Scanned: 5, Indexed: 2, Failed: 3, Batches: 1}, nil
 			},
 			DBCount:   fixedCount(5),

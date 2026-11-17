@@ -64,14 +64,25 @@ type SyncSummary struct {
 	Elapsed time.Duration // 灌数耗时
 }
 
-// SyncFunc 是割接第 3 步的灌数入口，由 CLI 层装配成对 sync.SyncProducts 的调用。
+// SyncFunc 是割接第 3 步的灌数入口，由 CLI 层装配成对「按别名分发的灌数实现」的调用。
 //
 // 约定：target 是**物理索引名**（不持有任何别名），实现内部必须以 op_type=index
 // 幂等写入 —— create 对重复 _id 会返回 409 version_conflict_engine_exception。
-type SyncFunc func(ctx context.Context, target string) (SyncSummary, error)
+//
+// alias 是本次编排正在处理的别名（多索引 --alias all 时逐条不同）：灌数实现据此从
+// 「别名 → 数据源」注册表里取对应的 Provider，**绝不能拿别名去猜**、也绝不能恒定取商品。
+// 一期只有一个别名时传什么都落到商品实现，行为与升级前逐字一致；订单接入后无需再改本层。
+type SyncFunc func(ctx context.Context, alias, target string) (SyncSummary, error)
 
-// CountFunc 提供 DB 侧期望文档数（割接口径：is_del=0 AND is_show=1）。
-type CountFunc func(ctx context.Context) (int64, error)
+// CountFunc 提供 DB 侧期望文档数，同样按 alias 分发到该别名登记的统计口径。
+// 未登记口径的别名必须返回错误（宁可报不出来，绝不拿商品口径套别的索引）。
+type CountFunc func(ctx context.Context, alias string) (int64, error)
+
+// productCountFunc 把商品专用统计器适配成带别名的 CountFunc。
+// 仅用于「调用方未注入 DBCount」的回落，保持升级前 nil → ProductDocCount 的既有语义。
+func productCountFunc(ctx context.Context, _ string) (int64, error) {
+	return ProductDocCount(ctx)
+}
 
 // ProductDocCount 按对账口径统计应进入索引的商品数。
 //
@@ -967,7 +978,7 @@ func RunCutover(ctx context.Context, opts CutoverOptions) (*CutoverResult, error
 		logf = func(format string, v ...any) { fmt.Printf(format+"\n", v...) }
 	}
 	if opts.DBCount == nil {
-		opts.DBCount = ProductDocCount
+		opts.DBCount = productCountFunc
 	}
 
 	audit := newAuditedCluster(opts.Cluster, opts.DryRun)
@@ -1054,7 +1065,7 @@ func RunCutover(ctx context.Context, opts CutoverOptions) (*CutoverResult, error
 		return res, fmt.Errorf("es: 别名位 %s 上既无别名也无物理索引，没有可割接的对象", alias)
 	}
 
-	dbExpected, err := opts.DBCount(ctx)
+	dbExpected, err := opts.DBCount(ctx, alias)
 	if err != nil {
 		res.AbortedStep = "precheck_db_count"
 		return res, err
@@ -1137,7 +1148,7 @@ func RunCutover(ctx context.Context, opts CutoverOptions) (*CutoverResult, error
 		return res, fmt.Errorf("es: 未注入灌数回调（SyncFunc 为 nil）")
 	}
 	logf("[3/7] 灌入 %s（从 MySQL 全量，op_type=index 幂等）", target)
-	summary, err := opts.Sync(ctx, target)
+	summary, err := opts.Sync(ctx, alias, target)
 	res.Sync = summary
 	if err != nil {
 		res.AbortedStep = "sync"
@@ -1209,7 +1220,7 @@ func RunCutover(ctx context.Context, opts CutoverOptions) (*CutoverResult, error
 			target, startedAt.Format(time.RFC3339))
 	}
 	logf("[6/7] 差量补偿：扫描 update_time >= %s（Unscoped，含删分支），目标 %s", startedAt.Format(time.RFC3339), target)
-	cstats, cerr := opts.Compensate(ctx, target, startedAt)
+	cstats, cerr := opts.Compensate(ctx, alias, target, startedAt)
 	res.Compensate = cstats
 	if cerr != nil {
 		res.AbortedStep = "compensate"
