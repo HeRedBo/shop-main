@@ -5,14 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"shop/internal/es"
+	"shop/internal/es/admin"
 	"strings"
 	golangsync "sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"shop/internal/es"
-	"shop/internal/es/admin"
 )
 
 // ---------------------------------------------------------------------------

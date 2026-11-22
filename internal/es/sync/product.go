@@ -9,18 +9,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"shop/internal/es"
+	"shop/internal/es/admin"
+	"shop/internal/models"
+	"shop/pkg/chunk"
+	"shop/pkg/global"
 	"sort"
 	"strconv"
 	"strings"
 	golangsync "sync"
 	"sync/atomic"
 	"time"
-
-	"shop/internal/es"
-	"shop/internal/es/admin"
-	"shop/internal/models"
-	"shop/pkg/chunk"
-	"shop/pkg/global"
 
 	"gorm.io/gorm"
 )
